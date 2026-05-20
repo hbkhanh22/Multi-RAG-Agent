@@ -1,0 +1,158 @@
+"""
+Reranking Module - Reranks retrieved documents by relevance
+Uses CrossEncoder models for better relevance scoring
+"""
+
+from typing import List, Optional, Tuple
+import logging
+
+from sentence_transformers import CrossEncoder
+from langchain_core.documents import Document
+
+from config.settings import settings
+
+logger = logging.getLogger(__name__)
+
+
+class Reranker:
+    """Reranks documents using CrossEncoder models"""
+    
+    def __init__(self, model_name: str = None):
+        """
+        Initialize reranker with a CrossEncoder model
+        
+        Args:
+            model_name: Model name from HuggingFace (defaults to settings.reranker_model)
+        """
+        if model_name is None:
+            model_name = settings.reranker_model
+
+        self.model_name = model_name
+        self.model: Optional[CrossEncoder] = None
+
+    def _load_model(self) -> bool:
+        if self.model is not None:
+            return True
+
+        try:
+            logger.info(f"Loading reranker model: {self.model_name}")
+            self.model = CrossEncoder(self.model_name)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load reranker model: {e}")
+            return False
+    
+    def rerank(self, query: str, documents: List[Document], k: int = None) -> List[Tuple[Document, float]]:
+        """
+        Rerank documents by relevance to query
+        
+        Args:
+            query: Query string
+            documents: List of documents to rerank
+            k: Return top k documents (uses top_k_rerank from settings if not specified)
+        
+        Returns:
+            List of (document, score) tuples sorted by relevance score descending
+        """
+        if k is None:
+            k = settings.top_k_rerank
+        
+        if not documents:
+            logger.warning("No documents to rerank")
+            return []
+
+        if not self._load_model():
+            return [(doc, 0.5) for doc in documents[:k]]
+        
+        try:
+            # Prepare pairs for CrossEncoder
+            doc_texts = [doc.page_content for doc in documents]
+            pairs = [[query, text] for text in doc_texts]
+            
+            # Get relevance scores
+            logger.info(f"Reranking {len(documents)} documents for query")
+            scores = self.model.predict(pairs)
+            
+            # Sort by score descending
+            doc_score_pairs = list(zip(documents, scores))
+            doc_score_pairs = sorted(doc_score_pairs, key=lambda x: x[1], reverse=True)
+            
+            # Return top k
+            top_k_results = doc_score_pairs[:k]
+            logger.info(f"Reranking complete. Top-{k} selected.")
+            
+            return top_k_results
+        except Exception as e:
+            logger.error(f"Error during reranking: {e}")
+            # Fallback: return documents as-is with equal scores
+            return [(doc, 0.5) for doc in documents[:k]]
+    
+    def batch_rerank(self, 
+                     query: str, 
+                     document_batches: dict, 
+                     k: int = None) -> dict:
+        """
+        Rerank documents from multiple domains
+        
+        Args:
+            query: Query string
+            document_batches: Dict with domain names as keys and document lists as values
+            k: Return top k per domain
+        
+        Returns:
+            Dict with reranked documents per domain
+        """
+        if k is None:
+            k = settings.top_k_rerank
+        
+        results = {}
+        for domain, documents in document_batches.items():
+            logger.info(f"Reranking {len(documents)} documents from {domain} domain")
+            reranked = self.rerank(query, documents, k)
+            results[domain] = reranked
+        
+        return results
+    
+    def score_documents(self, query: str, documents: List[Document]) -> List[dict]:
+        """
+        Score documents without reranking
+        
+        Args:
+            query: Query string
+            documents: List of documents
+        
+        Returns:
+            List of dicts with document and score
+        """
+        if not self._load_model():
+            return [
+                {
+                    "document": doc,
+                    "score": 0.5,
+                    "content_preview": doc.page_content[:100] + "..."
+                }
+                for doc in documents
+            ]
+
+        try:
+            doc_texts = [doc.page_content for doc in documents]
+            pairs = [[query, text] for text in doc_texts]
+            scores = self.model.predict(pairs)
+            
+            results = [
+                {
+                    "document": doc,
+                    "score": float(score),
+                    "content_preview": doc.page_content[:100] + "..."
+                }
+                for doc, score in zip(documents, scores)
+            ]
+            
+            return sorted(results, key=lambda x: x["score"], reverse=True)
+        except Exception as e:
+            logger.error(f"Error scoring documents: {e}")
+            return []
+
+
+# Singleton instance
+reranker = Reranker()

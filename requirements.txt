@@ -1,0 +1,46 @@
+# Core LangChain & LangGraph
+langchain==0.1.13
+langchain-core==0.1.30
+langchain-community==0.0.30
+langgraph==0.0.26
+
+# Google AI Integration (Gemini)
+langchain-google-genai==0.0.11
+google-generativeai==0.3.0
+
+# Vector Databases & Embeddings
+chromadb==0.4.24
+langchain-chroma==0.1.1
+sentence-transformers==2.3.1
+rank-bm25==0.2.2
+
+# API & Web Framework
+fastapi==0.109.0
+uvicorn==0.27.0
+pydantic==2.6.0
+pydantic-settings==2.1.0
+
+# Document Processing
+pypdf==4.1.1
+python-docx==0.8.11
+unstructured==0.12.0
+python-magic-bin==0.4.14
+
+# Data Processing
+pandas==2.1.4
+numpy==1.24.3
+
+# Utilities
+python-dotenv==1.0.0
+requests==2.31.0
+aiohttp==3.9.1
+
+# Logging & Monitoring
+python-json-logger==2.0.7
+
+# Development (optional)
+pytest==7.4.3
+pytest-asyncio==0.23.2
+black==24.1.1
+flake8==7.0.0
+isort==5.13.2
