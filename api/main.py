@@ -3,6 +3,7 @@ FastAPI Main Application - Multi-RAG Agent System API
 """
 
 import logging
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from fastapi.responses import JSONResponse
 from api.routes import router
 from config.settings import settings
 from src.utils import api_logger
+from src.ingestion import auto_ingest_raw_documents
 
 # Configure logging
 logging.basicConfig(level=settings.log_level)
@@ -27,7 +29,16 @@ async def lifespan(app: FastAPI):
     # Startup
     api_logger.info("Starting Multi-RAG Agent System API")
     api_logger.info(f"Settings: {settings.default_llm_model}")
-    
+
+    def _ingest():
+        try:
+            auto_ingest_raw_documents()
+        except Exception as e:
+            api_logger.error(f"Error during auto-ingestion: {e}", exc_info=True)
+
+    # Run ingestion in the background so the API starts answering immediately
+    threading.Thread(target=_ingest, name="auto-ingest", daemon=True).start()
+
     yield
     
     # Shutdown
@@ -37,7 +48,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="Multi-RAG Agent System",
-    description="Multi-agent Retrieval-Augmented Generation system using Google's Gemini",
+    description="Multi-agent Retrieval-Augmented Generation system (LangGraph + Chroma + NVIDIA NIM)",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -45,7 +56,7 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -79,13 +90,13 @@ async def root():
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     """Global exception handler"""
-    api_logger.error(f"Unhandled exception: {exc}")
+    api_logger.error(f"Unhandled exception on {request.url.path}: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
         content={
             "error": "Internal Server Error",
-            "message": str(exc),
-            "path": str(request.url)
+            "message": "An unexpected error occurred.",
+            "path": request.url.path
         }
     )
 

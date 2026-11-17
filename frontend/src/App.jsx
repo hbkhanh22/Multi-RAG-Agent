@@ -1,22 +1,80 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   AlertCircle,
   Bot,
   BrainCircuit,
+  Check,
+  ChevronDown,
   Clock3,
+  Code2,
+  Copy,
+  Cpu,
+  Database,
+  ExternalLink,
+  FileText,
+  Globe,
+  Layers,
   Loader2,
+  Moon,
+  Plus,
   Send,
   Sparkles,
+  Sun,
+  TrendingUp,
   User,
+  Zap,
 } from "lucide-react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const REQUEST_TIMEOUT_MS = 180000;
+const HEALTH_POLL_MS = 30000;
 
-const initialMessages = [
+// crypto.randomUUID only exists in secure contexts (https / localhost); fall back for LAN http access.
+const uid = () =>
+  globalThis.crypto?.randomUUID?.() ?? `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+const SAMPLE_QUESTIONS = [
   {
-    id: crypto.randomUUID(),
+    icon: Globe,
+    domain: "Live Web",
+    label: "Tin tức trực tuyến",
+    prompt: "Tìm kiếm trên web tin tức mới nhất hôm nay về các mô hình AI agent",
+  },
+  {
+    icon: Code2,
+    domain: "Tech",
+    label: "Giao thức MCP",
+    prompt: "Model Context Protocol (MCP) là gì, vì sao nó quan trọng và các tính năng cốt lõi?",
+  },
+  {
+    icon: TrendingUp,
+    domain: "Finance",
+    label: "Tài chính doanh nghiệp",
+    prompt: "Các phương pháp định giá cổ phiếu phổ biến và cách đọc báo cáo lưu chuyển tiền tệ?",
+  },
+  {
+    icon: Layers,
+    domain: "RAG Architecture",
+    label: "Kiến trúc Multi-RAG",
+    prompt: "So sánh ưu nhược điểm giữa Vector Search thông thường và Hybrid Search kết hợp Reranker?",
+  },
+];
+
+const STATUS_LABELS = {
+  checking: "Đang kiểm tra",
+  online: "Sẵn sàng",
+  degraded: "Hoạt động một phần",
+  offline: "Mất kết nối",
+};
+
+const INITIAL_MESSAGES = [
+  {
+    id: "welcome-msg",
     role: "assistant",
-    content: "Xin chao. Hay dat cau hoi, toi se dieu phoi den finance, tech hoac general agent.",
+    content:
+      "### 👋 Xin chào! Tôi là Multi-RAG Autonomous Agent\nTôi có thể hỗ trợ bạn tra cứu và phân tích sâu về **Kỹ thuật công nghệ (Tech)**, **Tài chính doanh nghiệp (Finance)** từ kho tài liệu nội bộ, đồng thời **Tìm kiếm thông tin thời sự trực tiếp trên Internet (Web Search)**.\n\n*Hãy nhập câu hỏi bên dưới hoặc chọn gợi ý nhanh để bắt đầu!*",
     meta: {
       route: "ready",
       confidence: 1,
@@ -24,44 +82,99 @@ const initialMessages = [
   },
 ];
 
-function App() {
-  const [messages, setMessages] = useState(initialMessages);
+export default function App() {
+  const [messages, setMessages] = useState(INITIAL_MESSAGES);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState("");
   const [includeMetadata, setIncludeMetadata] = useState(true);
   const [debug, setDebug] = useState(false);
+  const [theme, setTheme] = useState(() => localStorage.getItem("rag_theme") || "dark");
+  const [copiedId, setCopiedId] = useState(null);
+  const [apiStatus, setApiStatus] = useState("checking"); // checking | online | degraded | offline
+  const abortRef = useRef(null);
+
   const inputRef = useRef(null);
+  const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    localStorage.setItem("rag_theme", theme);
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isSending]);
+
+  // Real backend health instead of a hard-coded "online" label
+  useEffect(() => {
+    let cancelled = false;
+    async function check() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/health`);
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled) setApiStatus(res.ok ? (data.status === "healthy" ? "online" : "degraded") : "offline");
+      } catch {
+        if (!cancelled) setApiStatus("offline");
+      }
+    }
+    check();
+    const timer = setInterval(check, HEALTH_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  // Grow the textarea with its content (up to a cap)
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, [input]);
 
   const canSend = input.trim().length > 0 && !isSending;
 
   const latestMeta = useMemo(() => {
-    const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
     return lastAssistant?.meta || null;
   }, [messages]);
 
-  async function submitMessage(event) {
-    event?.preventDefault();
-    const query = input.trim();
+  const handleCopy = async (id, text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch {
+      // ignore
+    }
+  };
+
+  async function submitQuery(queryText) {
+    const query = (queryText || input).trim();
     if (!query || isSending) return;
 
-    const userMessage = {
-      id: crypto.randomUUID(),
+    const userMsg = {
+      id: uid(),
       role: "user",
       content: query,
     };
 
-    setMessages((current) => [...current, userMessage]);
+    setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setError("");
     setIsSending(true);
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
     try {
       const response = await fetch(`${API_BASE_URL}/api/chat`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           query,
           include_metadata: includeMetadata,
@@ -71,15 +184,15 @@ function App() {
 
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.detail || payload.message || "Khong the ket noi den agent.");
+        throw new Error(payload.detail || payload.message || "Không thể kết nối đến hệ thống Multi-RAG.");
       }
 
-      setMessages((current) => [
-        ...current,
+      setMessages((prev) => [
+        ...prev,
         {
-          id: crypto.randomUUID(),
+          id: uid(),
           role: "assistant",
-          content: payload.final_answer || "Agent khong tra ve noi dung.",
+          content: payload.final_answer || "Agent không trả về nội dung.",
           meta: {
             route: payload.route,
             confidence: payload.confidence,
@@ -91,143 +204,341 @@ function App() {
         },
       ]);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Da co loi xay ra.";
-      setError(message);
-      setMessages((current) => [
-        ...current,
+      const msg =
+        err?.name === "AbortError"
+          ? "Yêu cầu bị hủy hoặc quá thời gian chờ."
+          : err instanceof Error
+            ? err.message
+            : "Đã xảy ra lỗi không xác định.";
+      setError(msg);
+      setMessages((prev) => [
+        ...prev,
         {
-          id: crypto.randomUUID(),
+          id: uid(),
           role: "assistant",
-          content: "Toi chua xu ly duoc cau hoi nay. Kiem tra backend FastAPI va thu lai.",
-          meta: {
-            route: "error",
-            success: false,
-          },
+          content: `⚠️ **Lỗi kết nối:** ${msg}\n\n*Vui lòng kiểm tra lại trạng thái API backend hoặc kết nối mạng.*`,
+          meta: { route: "error", success: false },
         },
       ]);
     } finally {
+      clearTimeout(timeout);
+      abortRef.current = null;
       setIsSending(false);
       requestAnimationFrame(() => inputRef.current?.focus());
     }
   }
 
-  function clearChat() {
-    setMessages(initialMessages);
+  function handleFormSubmit(e) {
+    e?.preventDefault();
+    submitQuery();
+  }
+
+  function handleNewChat() {
+    abortRef.current?.abort();
+    setMessages(INITIAL_MESSAGES);
     setError("");
     setInput("");
     requestAnimationFrame(() => inputRef.current?.focus());
   }
 
+  const isInitialState = messages.length <= 1;
+
   return (
     <main className="appShell">
+      {/* SIDEBAR */}
       <aside className="sidebar">
         <div className="brand">
           <div className="brandMark">
-            <BrainCircuit size={24} aria-hidden="true" />
+            <BrainCircuit size={22} />
           </div>
-          <div>
-            <h1>Multi-RAG Chat</h1>
-            <p>Gemini agent workspace</p>
+          <div className="brandInfo">
+            <h1>Multi-RAG</h1>
+            <span className="brandBadge">Autonomous Agent</span>
           </div>
         </div>
 
-        <section className="statusPanel" aria-label="Agent status">
-          <div className="statusHeader">
-            <Sparkles size={18} aria-hidden="true" />
-            <span>Session</span>
+        <button type="button" className="newChatBtn" onClick={handleNewChat}>
+          <Plus size={18} />
+          <span>Đoạn chat mới</span>
+        </button>
+
+        {/* DOMAINS INFO */}
+        <section className="domainsCard" aria-label="Available Agents">
+          <div className="sectionLabel">
+            <Layers size={14} />
+            <span>Chuyên mục Agent</span>
           </div>
-          <dl>
-            <div>
-              <dt>API</dt>
-              <dd>{API_BASE_URL}</dd>
+          <div className="domainItems">
+            <div className="domainItem tech">
+              <Code2 size={16} />
+              <div>
+                <strong>Tech Agent</strong>
+                <small>Tài liệu, API & Kiến trúc</small>
+              </div>
             </div>
-            <div>
-              <dt>Route</dt>
-              <dd>{latestMeta?.route || "none"}</dd>
+            <div className="domainItem finance">
+              <TrendingUp size={16} />
+              <div>
+                <strong>Finance Agent</strong>
+                <small>Báo cáo & phân tích tài chính</small>
+              </div>
             </div>
-            <div>
-              <dt>Confidence</dt>
-              <dd>{formatPercent(latestMeta?.confidence)}</dd>
+            <div className="domainItem web">
+              <Globe size={16} />
+              <div>
+                <strong>Web Agent</strong>
+                <small>Tìm kiếm trực tuyến Real-time</small>
+              </div>
             </div>
-          </dl>
+            <div className="domainItem router">
+              <Zap size={16} />
+              <div>
+                <strong>Router Agent</strong>
+                <small>Phân tích ý định & Điều phối</small>
+              </div>
+            </div>
+          </div>
         </section>
 
-        <section className="controls" aria-label="Request options">
-          <label>
-            <input
-              type="checkbox"
-              checked={includeMetadata}
-              onChange={(event) => setIncludeMetadata(event.target.checked)}
-            />
-            <span>Metadata</span>
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={debug}
-              onChange={(event) => setDebug(event.target.checked)}
-            />
-            <span>Debug</span>
-          </label>
-          <button type="button" className="secondaryButton" onClick={clearChat}>
-            Clear
-          </button>
+        {/* SESSION MONITOR */}
+        <section className="statusCard" aria-label="Session status">
+          <div className="sectionLabel">
+            <Sparkles size={14} />
+            <span>Trạng thái phiên</span>
+          </div>
+          <div className="statusList">
+            <div className="statusRow">
+              <span className="statusKey">Trạng thái</span>
+              <span className={apiStatus === "online" ? "statusOnline" : "statusValue"}>
+                <span className="pulseDot" /> {STATUS_LABELS[apiStatus]}
+              </span>
+            </div>
+            <div className="statusRow">
+              <span className="statusKey">Route gần nhất</span>
+              <span className={`routeTag ${latestMeta?.route || "none"}`}>
+                {latestMeta?.route || "Chưa có"}
+              </span>
+            </div>
+            <div className="statusRow">
+              <span className="statusKey">Độ tin cậy</span>
+              <span className="statusValue">{formatPercent(latestMeta?.confidence)}</span>
+            </div>
+            {typeof latestMeta?.processingTime === "number" && (
+              <div className="statusRow">
+                <span className="statusKey">Thời gian xử lý</span>
+                <span className="statusValue">{latestMeta.processingTime.toFixed(2)}s</span>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* CONTROLS */}
+        <section className="controlsCard" aria-label="Settings">
+          <div className="sectionLabel">
+            <Database size={14} />
+            <span>Tùy chọn cấu hình</span>
+          </div>
+          <div className="controlToggles">
+            <label className="toggleLabel">
+              <input
+                type="checkbox"
+                checked={includeMetadata}
+                onChange={(e) => setIncludeMetadata(e.target.checked)}
+              />
+              <span>Trích xuất Metadata</span>
+            </label>
+            <label className="toggleLabel">
+              <input
+                type="checkbox"
+                checked={debug}
+                onChange={(e) => setDebug(e.target.checked)}
+              />
+              <span>Chế độ Debug</span>
+            </label>
+          </div>
+
+          <div className="sidebarFooter">
+            <button
+              type="button"
+              className="iconBtn themeBtn"
+              onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+              title={theme === "dark" ? "Chuyển sang Giao diện Sáng" : "Chuyển sang Giao diện Tối"}
+            >
+              {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
+              <span>{theme === "dark" ? "Giao diện sáng" : "Giao diện tối"}</span>
+            </button>
+          </div>
         </section>
       </aside>
 
-      <section className="chatPanel" aria-label="Agent chat">
-        <header className="chatHeader">
-          <div>
-            <h2>Agent Chat</h2>
-            <p>Hoi ve tai chinh, cong nghe hoac kien thuc tong quat.</p>
-          </div>
-          {isSending && (
-            <div className="thinking">
-              <Loader2 size={16} aria-hidden="true" />
-              <span>Dang xu ly</span>
+      {/* CHAT MAIN PANEL */}
+      <section className="chatPanel" aria-label="Chat container">
+        {/* CHAT TOPBAR */}
+        <header className="chatTopBar">
+          <div className="chatTitleGroup">
+            <h2>Multi-RAG Assistant</h2>
+            <div className="modelBadge">
+              <Cpu size={14} />
+              <span>NVIDIA NIM LLM • Hybrid Vector Store</span>
             </div>
-          )}
+          </div>
+          <div className="topBarActions">
+            <span className="activeStatus">
+              <span className="statusPill">API: {STATUS_LABELS[apiStatus]}</span>
+            </span>
+          </div>
         </header>
 
         {error && (
           <div className="errorBanner" role="alert">
-            <AlertCircle size={18} aria-hidden="true" />
+            <AlertCircle size={18} />
             <span>{error}</span>
           </div>
         )}
 
+        {/* MESSAGES LIST */}
         <div className="messages" aria-live="polite">
           {messages.map((message) => (
             <article className={`message ${message.role}`} key={message.id}>
               <div className="avatar" aria-hidden="true">
                 {message.role === "user" ? <User size={18} /> : <Bot size={18} />}
               </div>
+
               <div className="bubble">
-                <div className="messageText">{message.content}</div>
+                <div className="bubbleHeader">
+                  <span className="authorName">
+                    {message.role === "user" ? "Bạn" : "Multi-RAG Agent"}
+                  </span>
+                  {message.role === "assistant" && (
+                    <button
+                      type="button"
+                      className="copyBtn"
+                      onClick={() => handleCopy(message.id, message.content)}
+                      title="Sao chép câu trả lời"
+                    >
+                      {copiedId === message.id ? (
+                        <>
+                          <Check size={14} className="copiedIcon" />
+                          <span>Đã chép</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy size={14} />
+                          <span>Sao chép</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+
+                <div className={`messageText ${message.role === "assistant" ? "markdown" : "userText"}`}>
+                  {message.role === "assistant" ? (
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        table: ({ node, ...props }) => (
+                          <div className="tableWrapper">
+                            <table {...props} />
+                          </div>
+                        ),
+                      }}
+                    >
+                      {message.content}
+                    </ReactMarkdown>
+                  ) : (
+                    message.content
+                  )}
+                </div>
+
                 {message.meta && <MessageMeta meta={message.meta} />}
               </div>
             </article>
           ))}
+
+          {/* THINKING STATE */}
+          {isSending && (
+            <article className="message assistant thinkingMessage">
+              <div className="avatar" aria-hidden="true">
+                <Bot size={18} />
+              </div>
+              <div className="bubble thinkingBubble">
+                <div className="thinkingHeader">
+                  <Loader2 size={16} className="spinIcon" />
+                  <span>Multi-RAG Agent đang phân tích & truy vấn...</span>
+                </div>
+                <div className="thinkingBar">
+                  <div className="thinkingShimmer" />
+                </div>
+              </div>
+            </article>
+          )}
+
+          {/* SUGGESTION PROMPTS (EMPTY STATE) */}
+          {isInitialState && (
+            <div className="starterPrompts">
+              <div className="starterHeader">
+                <Sparkles size={16} />
+                <span>Gợi ý câu hỏi bắt đầu nhanh:</span>
+              </div>
+              <div className="starterGrid">
+                {SAMPLE_QUESTIONS.map((item, idx) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      type="button"
+                      key={idx}
+                      className="starterCard"
+                      onClick={() => submitQuery(item.prompt)}
+                    >
+                      <div className="starterTop">
+                        <Icon size={18} className="starterIcon" />
+                        <span className="starterDomain">{item.domain}</span>
+                      </div>
+                      <strong>{item.label}</strong>
+                      <p>{item.prompt}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div ref={messagesEndRef} />
         </div>
 
-        <form className="composer" onSubmit={submitMessage}>
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                submitMessage();
-              }
-            }}
-            placeholder="Nhap cau hoi cho agent..."
-            rows={1}
-          />
-          <button type="submit" disabled={!canSend} aria-label="Send message">
-            {isSending ? <Loader2 size={20} aria-hidden="true" /> : <Send size={20} aria-hidden="true" />}
-          </button>
-        </form>
+        {/* COMPOSER / INPUT BAR */}
+        <div className="composerWrapper">
+          <form className="composer" onSubmit={handleFormSubmit}>
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleFormSubmit();
+                }
+              }}
+              placeholder="Nhập câu hỏi để tra cứu tài liệu hoặc trò chuyện với Multi-RAG Agent..."
+              rows={1}
+            />
+            <button
+              type="submit"
+              disabled={!canSend}
+              className={`sendBtn ${canSend ? "active" : ""}`}
+              aria-label="Gửi tin nhắn"
+            >
+              {isSending ? (
+                <Loader2 size={18} className="spinIcon" />
+              ) : (
+                <Send size={18} />
+              )}
+            </button>
+          </form>
+          <div className="composerFooter">
+            <span>Nhấn <strong>Enter</strong> để gửi, <strong>Shift + Enter</strong> để xuống dòng • Hỗ trợ hiển thị Markdown Preview & Bảng</span>
+          </div>
+        </div>
       </section>
     </main>
   );
@@ -237,14 +548,24 @@ function MessageMeta({ meta }) {
   const hasSources = Array.isArray(meta.sources) && meta.sources.length > 0;
   const hasThemes = Array.isArray(meta.keyThemes) && meta.keyThemes.length > 0;
 
+  if (!meta.route && !hasSources && !hasThemes && typeof meta.confidence !== "number") {
+    return null;
+  }
+
   return (
     <div className="meta">
       <div className="metaRow">
-        {meta.route && <span>{meta.route}</span>}
-        {typeof meta.confidence === "number" && <span>{formatPercent(meta.confidence)}</span>}
+        {meta.route && (
+          <span className={`metaPill route-${meta.route}`}>
+            <Zap size={11} /> {meta.route}
+          </span>
+        )}
+        {typeof meta.confidence === "number" && (
+          <span className="metaPill">Độ khớp: {formatPercent(meta.confidence)}</span>
+        )}
         {typeof meta.processingTime === "number" && (
-          <span className="withIcon">
-            <Clock3 size={13} aria-hidden="true" />
+          <span className="metaPill withIcon">
+            <Clock3 size={11} />
             {meta.processingTime.toFixed(2)}s
           </span>
         )}
@@ -252,23 +573,56 @@ function MessageMeta({ meta }) {
 
       {hasThemes && (
         <div className="chips">
-          {meta.keyThemes.slice(0, 5).map((theme) => (
-            <span key={theme}>{theme}</span>
+          {meta.keyThemes.slice(0, 6).map((theme, i) => (
+            <span key={i} className="chip">
+              #{theme}
+            </span>
           ))}
         </div>
       )}
 
       {hasSources && (
-        <details className="sources">
-          <summary>Sources ({meta.sources.length})</summary>
-          <ul>
-            {meta.sources.slice(0, 6).map((source, index) => (
-              <li key={`${source.source || "source"}-${index}`}>
-                <strong>{source.agent || "agent"}</strong>
-                <span>{source.source || "unknown source"}</span>
-                {source.page !== null && source.page !== undefined && <em>p. {source.page}</em>}
-              </li>
-            ))}
+        <details className="sourcesAccordion">
+          <summary>
+            <FileText size={14} />
+            <span>Nguồn tài liệu tham chiếu ({meta.sources.length})</span>
+            <ChevronDown size={14} className="chevron" />
+          </summary>
+          <ul className="sourcesList">
+            {meta.sources.slice(0, 8).map((source, index) => {
+              const isWeb = source.agent === "web" || (source.source && source.source.startsWith("http")) || Boolean(source.url);
+              const linkUrl = source.url || (source.source && source.source.startsWith("http") ? source.source : null);
+              return (
+                <li key={`${source.source || "source"}-${index}`}>
+                  <div className="sourceHeader">
+                    <span className={`sourceAgent ${source.agent === "web" ? "agent-web" : ""}`}>
+                      {source.agent === "web" ? <Globe size={11} style={{ marginRight: 3, verticalAlign: 'middle' }} /> : null}
+                      {source.agent || "Agent"}
+                    </span>
+                    {isWeb && linkUrl ? (
+                      <a
+                        href={linkUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="sourceLink"
+                        title={source.snippet || source.title || linkUrl}
+                      >
+                        <span>{source.title || linkUrl}</span>
+                        <ExternalLink size={12} className="extIcon" />
+                      </a>
+                    ) : (
+                      <span className="sourceName">{source.source || "Tài liệu hệ thống"}</span>
+                    )}
+                    {source.page !== null && source.page !== undefined && (
+                      <span className="sourcePage">Trang {source.page}</span>
+                    )}
+                  </div>
+                  {source.snippet && isWeb && (
+                    <p className="sourceSnippet">{source.snippet.slice(0, 160)}...</p>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </details>
       )}
@@ -280,5 +634,3 @@ function formatPercent(value) {
   if (typeof value !== "number" || Number.isNaN(value)) return "n/a";
   return `${Math.round(value * 100)}%`;
 }
-
-export default App;

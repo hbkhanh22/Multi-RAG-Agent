@@ -17,17 +17,24 @@ class QueryRequest(BaseModel):
 
 class BatchQueryRequest(BaseModel):
     """Batch query request"""
-    queries: List[str] = Field(..., min_items=1, max_items=100)
+    queries: List[str] = Field(..., min_length=1, max_length=100)
     domain: Optional[str] = None
 
 
 # Response Models
 class CitationModel(BaseModel):
     """Citation in response"""
-    agent: str
+    agent: Optional[str] = None
     source_id: Optional[int] = None
-    source: str
+    source: Optional[str] = None
+    title: Optional[str] = None
+    url: Optional[str] = None
+    snippet: Optional[str] = None
     page: Optional[int] = None
+    # metadata-type fields (from synthesizer agent stats)
+    retrieved_count: Optional[int] = None
+    reranked_count: Optional[int] = None
+    type: Optional[str] = None
 
 
 class AgentResponseModel(BaseModel):
