@@ -29,6 +29,8 @@ class Reranker:
 
         self.model_name = model_name
         self.model: Optional[CrossEncoder] = None
+        # Pre-load the model immediately so first query doesn't pay the cold-start cost
+        self._load_model()
 
     def _load_model(self) -> bool:
         if self.model is not None:
@@ -37,6 +39,7 @@ class Reranker:
         try:
             logger.info(f"Loading reranker model: {self.model_name}")
             self.model = CrossEncoder(self.model_name)
+            logger.info("Reranker model loaded and ready.")
             return True
         except Exception as e:
             logger.error(f"Failed to load reranker model: {e}")

@@ -1,247 +1,242 @@
 """
-RAG Agent - Specialist agent for retrieving and generating answers from domain-specific vector stores
+RAG Agent - Specialist agent that retrieves from a domain vector store and
+generates a cited answer.
+
+Pipeline: query expansion -> hybrid retrieval -> cross-encoder rerank ->
+relevance threshold -> (cross-domain fallback -> web fallback) -> generation.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Tuple
 import logging
-import json
 
 from langchain_core.documents import Document
 
 from .base_agent import BaseAgent
 from src.retrieval import vector_store_manager, reranker, query_expander
+from src.tools.web_search import web_search_tool
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+ALL_DOMAINS = ["finance", "tech", "general"]
+MAX_CONTEXT_CHARS = 1500
+
+ScoredDoc = Tuple[Document, float]
+
 
 class RAGAgent(BaseAgent):
     """Specialist RAG agent for a specific domain"""
-    
+
     def __init__(self, domain: str, name: str = None, model: str = None, temperature: float = None):
-        """
-        Initialize RAG agent
-        
-        Args:
-            domain: Domain name (finance, tech, general)
-            name: Agent name (defaults to "{domain} RAG Agent")
-            model: LLM model
-            temperature: Temperature
-        """
         self.domain = domain
-        self.name = name or f"{domain.capitalize()} RAG Agent"
-        
-        super().__init__(name=self.name, model=model, temperature=temperature)
-        
-        self.retriever = vector_store_manager.get_retriever(domain)
-        if self.retriever is None:
-            logger.warning(f"No vector store available for domain: {domain}")
-    
+        name = name or f"{domain.capitalize()} RAG Agent"
+        super().__init__(name=name, model=model, temperature=temperature)
+
+    # ------------------------------------------------------------------ main
+
     def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Run RAG pipeline: retrieve, rerank, generate
-        
         Args:
-            input_data: Must contain 'query' key
-        
-        Returns:
-            Output dict with answer, sources, metadata
+            input_data: Must contain 'query'
         """
         try:
             query = input_data.get("query", "")
             if not query:
-                return {
-                    "success": False,
-                    "answer": "No query provided",
-                    "sources": [],
-                    "domain": self.domain
-                }
-            
-            self.add_to_history("user", query)
-            
-            # Step 1: Retrieve documents
-            retrieved_docs = self._retrieve(query)
-            
-            if not retrieved_docs:
-                return {
-                    "success": False,
-                    "answer": f"No relevant documents found in {self.domain} domain",
-                    "sources": [],
-                    "domain": self.domain,
-                    "retrieved_count": 0
-                }
-            
-            # Step 2: Rerank documents
-            reranked_docs = self._rerank(query, retrieved_docs)
-            
-            # Step 3: Generate answer
-            answer, citations = self._generate(query, reranked_docs)
-            
-            self.add_to_history("assistant", answer)
-            
+                return {"success": False, "answer": "No query provided", "sources": [], "domain": self.domain}
+
+            documents, retrieved_count, fallback = self._gather_context(query)
+            answer, citations = self._generate(query, documents)
+
             return {
                 "success": True,
                 "answer": answer,
                 "sources": citations,
                 "domain": self.domain,
-                "retrieved_count": len(retrieved_docs),
-                "reranked_count": len(reranked_docs),
-                "model": self.model
+                "fallback": fallback,
+                "retrieved_count": retrieved_count,
+                "reranked_count": len(documents),
+                "model": self.model,
             }
-        
+
         except Exception as e:
-            logger.error(f"Error in RAG agent run: {e}")
+            logger.error(f"Error in RAG agent run: {e}", exc_info=True)
             return {
                 "success": False,
-                "answer": f"Error processing query: {str(e)}",
+                "answer": f"Error processing query: {e}",
                 "sources": [],
                 "domain": self.domain,
-                "error": str(e)
+                "error": str(e),
             }
-    
-    def _retrieve(self, query: str) -> List[Document]:
+
+    def _gather_context(self, query: str) -> Tuple[List[Document], int, str]:
         """
-        Retrieve documents from vector store
-        
-        Args:
-            query: Search query
-        
-        Returns:
-            List of retrieved documents
+        Return (documents, retrieved_count, fallback_used).
+
+        A chunk only counts as relevant if its rerank score reaches
+        settings.relevance_threshold; plain similarity search always returns k
+        neighbours, relevant or not, so without this the fallbacks never fire.
         """
+        # 1) Own domain (with query expansion)
+        candidates = self._retrieve(query, self.domain, expand=True)
+        retrieved_count = len(candidates)
+        relevant = self._select_relevant(query, candidates)
+        if relevant:
+            return relevant, retrieved_count, "none"
+
+        # 2) Other local domains
+        logger.warning(f"No relevant docs in '{self.domain}', trying other domains...")
+        other: List[Document] = []
+        for domain in ALL_DOMAINS:
+            if domain != self.domain:
+                other.extend(self._retrieve(query, domain, expand=False))
+        retrieved_count += len(other)
+        relevant = self._select_relevant(query, other)
+        if relevant:
+            return relevant, retrieved_count, "cross_domain"
+
+        # 3) Live web
+        logger.warning(f"No relevant local docs for '{query}', falling back to web search...")
+        web_docs = self._web_documents(query)
+        retrieved_count += len(web_docs)
+        if web_docs:
+            return web_docs, retrieved_count, "web"
+
+        return [], retrieved_count, "none"
+
+    # ------------------------------------------------------------ retrieval
+
+    def _retrieve(self, query: str, domain: str, expand: bool) -> List[Document]:
+        """Hybrid-search a domain (optionally for several expanded queries) and dedupe."""
         try:
-            # Query expansion for better retrieval
-            expanded_queries = query_expander.get_expanded_queries(
-                query, 
-                domain=self.domain,
-                expansion_types=["multi_query", "synonyms"]
-            )
-            
-            all_docs = []
-            seen_content = set()
-            
-            for expanded_query in expanded_queries:
-                docs = vector_store_manager.search(
-                    domain=self.domain,
-                    query=expanded_query,
-                    k=settings.top_k_retrieval
+            queries = [query]
+            if expand:
+                queries = query_expander.get_expanded_queries(
+                    query, domain=domain, expansion_types=["multi_query"]
                 )
-                
-                # Deduplicate
-                for doc in docs:
-                    content_hash = hash(doc.page_content)
-                    if content_hash not in seen_content:
-                        seen_content.add(content_hash)
-                        all_docs.append(doc)
-            
-            logger.info(f"Retrieved {len(all_docs)} documents from {self.domain}")
-            return all_docs[:settings.top_k_retrieval * 2]  # Limit total
-        
+
+            docs: List[Document] = []
+            seen = set()
+            for q in queries:
+                for doc in vector_store_manager.hybrid_search(domain, q, k=settings.top_k_retrieval):
+                    key = (doc.metadata.get("source"), doc.metadata.get("page"), doc.page_content)
+                    if key not in seen:
+                        seen.add(key)
+                        docs.append(doc)
+
+            logger.info(f"Retrieved {len(docs)} candidate documents from {domain}")
+            return docs[: settings.top_k_retrieval * 2]
+
         except Exception as e:
-            logger.error(f"Error during retrieval: {e}")
+            logger.error(f"Error during retrieval in {domain}: {e}", exc_info=True)
             return []
-    
-    def _rerank(self, query: str, documents: List[Document]) -> List[Document]:
-        """
-        Rerank documents by relevance
-        
-        Args:
-            query: Search query
-            documents: Documents to rerank
-        
-        Returns:
-            Reranked documents
-        """
-        if not settings.use_reranker or not documents:
-            return documents
-        
+
+    def _select_relevant(self, query: str, documents: List[Document]) -> List[Document]:
+        """Rerank and keep only chunks above the relevance threshold."""
+        if not documents:
+            return []
+
+        if not settings.use_reranker:
+            return documents[: settings.top_k_rerank]
+
         try:
-            reranked = reranker.rerank(query, documents, k=settings.top_k_rerank)
-            logger.info(f"Reranked documents: {len(documents)} -> {len(reranked)}")
-            return [doc for doc, score in reranked]
-        
+            scored: List[ScoredDoc] = reranker.rerank(query, documents, k=settings.top_k_rerank)
         except Exception as e:
             logger.error(f"Error during reranking: {e}")
-            return documents[:settings.top_k_rerank]
-    
-    def _generate(self, query: str, documents: List[Document]) -> tuple:
-        """
-        Generate answer from documents
-        
-        Args:
-            query: Original query
-            documents: Relevant documents
-        
-        Returns:
-            Tuple of (answer, citations)
-        """
+            return documents[: settings.top_k_rerank]
+
+        relevant = [doc for doc, score in scored if score >= settings.relevance_threshold]
+        best = max((float(s) for _, s in scored), default=float("nan"))
+        logger.info(
+            f"Rerank: {len(documents)} candidates -> {len(relevant)} relevant "
+            f"(best score {best:.2f}, threshold {settings.relevance_threshold})"
+        )
+        return relevant
+
+    def _web_documents(self, query: str) -> List[Document]:
         try:
-            # Format context
-            context_str = self._format_context_for_llm(documents)
-            
-            system_prompt = f"""You are a helpful assistant specializing in {self.domain} domain.
-Answer questions based on the provided context.
-If the context doesn't contain relevant information, say so clearly.
-Always cite your sources using [Source N] notation.
+            results = web_search_tool.search(query, limit=settings.top_k_rerank + 1)
+        except Exception as e:
+            logger.error(f"Error in web search fallback: {e}")
+            return []
+
+        return [
+            Document(
+                page_content=f"{item['title']}: {item['snippet']}",
+                metadata={
+                    "source": item.get("url", ""),
+                    "url": item.get("url", ""),
+                    "title": item.get("title", ""),
+                    "snippet": item.get("snippet", ""),
+                    "domain": "web",
+                    "type": "web_search",
+                },
+            )
+            for item in results
+        ]
+
+    # ----------------------------------------------------------- generation
+
+    def _generate(self, query: str, documents: List[Document]) -> Tuple[str, List[Dict]]:
+        """Generate an answer from documents"""
+        try:
+            system_prompt = f"""You are a helpful assistant specializing in the {self.domain} domain.
+Answer the question based on the provided context, in the same language as the question.
+If the context is empty or insufficient, answer from your own knowledge but clearly say so.
+Always cite sources using [Source N] notation when context is available.
 Be precise and accurate."""
-            
-            prompt = f"""Context:
-{context_str}
+
+            if documents:
+                prompt = f"""Context:
+{self._format_context_for_llm(documents)}
 
 Question: {query}
 
 Please provide a comprehensive answer with citations:"""
-            
+            else:
+                prompt = (
+                    f"Question: {query}\n\n"
+                    "No relevant documents were found in the knowledge base or on the web. "
+                    "Answer from your general knowledge and note this clearly."
+                )
+
             answer = self.invoke([prompt], system_prompt=system_prompt)
-            
-            # Extract citations
-            citations = self._extract_citations(documents, answer)
-            
-            return answer, citations
-        
+            return answer, self._extract_citations(documents, answer)
+
         except Exception as e:
-            logger.error(f"Error during generation: {e}")
-            return f"Error generating answer: {str(e)}", []
-    
+            logger.error(f"Error during generation: {e}", exc_info=True)
+            raise
+
     def _format_context_for_llm(self, documents: List[Document]) -> str:
-        """Format documents as context for LLM"""
         context = ""
         for i, doc in enumerate(documents, 1):
-            content = doc.page_content[:500]  # Limit length
-            source = doc.metadata.get("source", "Unknown")
-            context += f"\n[Source {i}] {source}\n{content}\n"
+            source = doc.metadata.get("title") or doc.metadata.get("filename") or doc.metadata.get("source", "Unknown")
+            context += f"\n[Source {i}] {source}\n{doc.page_content[:MAX_CONTEXT_CHARS]}\n"
         return context
-    
+
     def _extract_citations(self, documents: List[Document], answer: str) -> List[Dict]:
-        """Extract citations from answer"""
+        """Citations for the [Source N] markers actually used in the answer"""
         citations = []
-        
         for i, doc in enumerate(documents, 1):
             if f"[Source {i}]" in answer:
-                citations.append({
+                meta = doc.metadata
+                citation = {
                     "source_id": i,
-                    "source": doc.metadata.get("source", "Unknown"),
-                    "page": doc.metadata.get("page", None)
-                })
-        
-        return citations if citations else []
-    
+                    "source": meta.get("source", "Unknown"),
+                    "title": meta.get("title") or meta.get("filename"),
+                    "snippet": doc.page_content[:200],
+                    "page": meta.get("page"),
+                }
+                if meta.get("url"):
+                    citation["url"] = meta["url"]
+                citations.append(citation)
+        return citations
+
+    # -------------------------------------------------------------- helpers
+
     def batch_process(self, queries: List[str]) -> List[Dict[str, Any]]:
-        """
-        Process multiple queries
-        
-        Args:
-            queries: List of queries
-        
-        Returns:
-            List of results
-        """
-        results = []
-        for query in queries:
-            result = self.run({"query": query})
-            results.append(result)
-        return results
-    
+        """Process multiple queries"""
+        return [self.run({"query": q}) for q in queries]
+
     def get_domain_stats(self) -> Dict[str, Any]:
         """Get statistics about this agent's domain"""
         return {
@@ -249,5 +244,4 @@ Please provide a comprehensive answer with citations:"""
             "domain": self.domain,
             "store_stats": vector_store_manager.get_store_stats(self.domain),
             "model": self.model,
-            "conversation_history_length": len(self.conversation_history)
         }

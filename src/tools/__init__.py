@@ -13,6 +13,7 @@ from .search_tools import (
     AVAILABLE_TOOLS
 )
 from .calculator_tool import CalculatorTool, calculator, execute_calculation
+from .web_search import web_search_tool, web_scraper_tool, WebScraperTool
 
 __all__ = [
     "SearchTool",
@@ -26,4 +27,7 @@ __all__ = [
     "CalculatorTool",
     "calculator",
     "execute_calculation",
+    "web_search_tool",
+    "web_scraper_tool",
+    "WebScraperTool",
 ]

@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 import logging
 from datetime import datetime
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 from config.settings import settings
@@ -32,18 +32,18 @@ class BaseAgent(ABC):
         self.temperature = temperature if temperature is not None else settings.llm_temperature
         
         try:
-            self.llm = ChatGoogleGenerativeAI(
+            self.llm = ChatNVIDIA(
                 model=self.model,
-                google_api_key=settings.google_api_key,
+                api_key=settings.nvidia_api_key,
                 temperature=self.temperature,
-                max_tokens=settings.llm_max_tokens
+                max_tokens=settings.llm_max_tokens,
+                timeout=settings.llm_timeout
             )
             logger.info(f"Initialized {self.name} with model {self.model}")
         except Exception as e:
             logger.error(f"Failed to initialize LLM for {self.name}: {e}")
             raise
         
-        self.conversation_history = []
         self.created_at = datetime.now()
     
     @abstractmethod
@@ -121,24 +121,6 @@ class BaseAgent(ABC):
         
         return formatted
     
-    def add_to_history(self, role: str, content: str):
-        """Add message to conversation history"""
-        self.conversation_history.append({
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now().isoformat()
-        })
-    
-    def get_history(self, max_items: int = None) -> List[Dict]:
-        """Get conversation history"""
-        if max_items:
-            return self.conversation_history[-max_items:]
-        return self.conversation_history
-    
-    def clear_history(self):
-        """Clear conversation history"""
-        self.conversation_history = []
-    
     def get_agent_info(self) -> Dict[str, Any]:
         """Get agent information"""
         return {
@@ -146,5 +128,4 @@ class BaseAgent(ABC):
             "model": self.model,
             "temperature": self.temperature,
             "created_at": self.created_at.isoformat(),
-            "history_length": len(self.conversation_history)
         }

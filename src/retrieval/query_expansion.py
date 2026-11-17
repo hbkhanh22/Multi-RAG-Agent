@@ -6,13 +6,31 @@ Includes HyDE (Hypothetical Document Embeddings) and Multi-Query expansion
 from typing import List
 import logging
 import json
+import re
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_string_list(content: str) -> List[str]:
+    """Parse a JSON array of strings from LLM output (tolerates ```json fences / prose)."""
+    text = (content or "").strip()
+    candidates = [text]
+    m = re.search(r"\[.*\]", text, re.DOTALL)
+    if m:
+        candidates.append(m.group(0))
+    for cand in candidates:
+        try:
+            data = json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, list):
+            return [str(x).strip() for x in data if str(x).strip()]
+    return []
 
 
 class QueryExpander:
@@ -21,11 +39,12 @@ class QueryExpander:
     def __init__(self):
         """Initialize query expander with Google LLM"""
         try:
-            self.llm = ChatGoogleGenerativeAI(
+            self.llm = ChatNVIDIA(
                 model=settings.fast_llm_model,
-                google_api_key=settings.google_api_key,
+                api_key=settings.nvidia_api_key,
                 temperature=0.3,
-                max_tokens=1000
+                max_tokens=1000,
+                timeout=settings.llm_timeout
             )
         except Exception as e:
             logger.error(f"Failed to initialize LLM: {e}")
@@ -80,7 +99,7 @@ Hypothetical document:"""
             logger.error(f"Error in HyDE expansion: {e}")
             return query  # Fallback to original query
     
-    def multi_query_expansion(self, query: str, num_queries: int = 3) -> List[str]:
+    def multi_query_expansion(self, query: str, num_queries: int = 2) -> List[str]:
         """
         Generate multiple reformulations of the query to improve recall
         
@@ -112,15 +131,11 @@ Generate {num_queries} alternative queries that capture different aspects:"""
             if not content:
                 return [query]
             
-            try:
-                alternatives = json.loads(content)
-                if isinstance(alternatives, list):
-                    expanded_queries = [query] + alternatives[:num_queries]
-                    logger.info(f"Generated {len(alternatives)} alternative queries")
-                    return expanded_queries
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse JSON response, returning original query")
+            alternatives = _parse_string_list(content)
+            if not alternatives:
+                logger.warning("Could not parse query expansion output, using original query")
                 return [query]
+            return [query] + alternatives[:num_queries]
         except Exception as e:
             logger.error(f"Error in multi-query expansion: {e}")
             return [query]
@@ -166,12 +181,11 @@ Generate 2 domain-optimized query variations:"""
             if not content:
                 return [query]
             
-            try:
-                variations = json.loads(content)
-                if isinstance(variations, list):
-                    return [query] + variations[:2]
-            except json.JSONDecodeError:
+            variations = _parse_string_list(content)
+            if not variations:
+                logger.warning("Could not parse query expansion output, using original query")
                 return [query]
+            return [query] + variations[:2]
         except Exception as e:
             logger.error(f"Error in domain-specific expansion: {e}")
             return [query]
@@ -205,12 +219,11 @@ Generate 2 synonymous query formulations with different vocabulary:"""
             if not content:
                 return [query]
             
-            try:
-                synonyms = json.loads(content)
-                if isinstance(synonyms, list):
-                    return [query] + synonyms[:2]
-            except json.JSONDecodeError:
+            synonyms = _parse_string_list(content)
+            if not synonyms:
+                logger.warning("Could not parse query expansion output, using original query")
                 return [query]
+            return [query] + synonyms[:2]
         except Exception as e:
             logger.error(f"Error in synonym expansion: {e}")
             return [query]
@@ -230,7 +243,7 @@ Generate 2 synonymous query formulations with different vocabulary:"""
             Combined list of original and expanded queries
         """
         if expansion_types is None:
-            expansion_types = ["multi_query", "synonyms"]
+            expansion_types = ["multi_query"]  # Reduced from ["multi_query", "synonyms"] to save ~1 LLM call
         
         expanded = [query]  # Start with original
         

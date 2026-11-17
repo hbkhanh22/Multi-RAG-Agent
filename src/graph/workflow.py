@@ -3,8 +3,8 @@ Workflow - LangGraph workflow builder for multi-RAG agent system
 """
 
 import logging
-from typing import Any, Dict
 import time
+from typing import Any, Dict
 
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage
@@ -15,32 +15,31 @@ from .nodes import (
     finance_rag_node,
     tech_rag_node,
     general_rag_node,
+    web_agent_node,
     supervisor_node,
-    synthesizer_node
+    synthesizer_node,
+    direct_chat_node,
 )
-from .edges import route_after_router, route_to_end
+from .edges import route_after_router
 
 logger = logging.getLogger(__name__)
 
 
 def build_agent_graph():
-    """Build LangGraph workflow for multi-RAG agent system"""
-    
+    """Build and compile the LangGraph workflow for the multi-RAG agent system"""
     graph = StateGraph(AgentState)
-    
-    # Add nodes
-    logger.info("Adding nodes to graph...")
+
     graph.add_node("router", router_node)
     graph.add_node("finance_agent", finance_rag_node)
     graph.add_node("tech_agent", tech_rag_node)
     graph.add_node("general_agent", general_rag_node)
+    graph.add_node("web_agent", web_agent_node)
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("synthesizer", synthesizer_node)
-    
-    # Set entry point
+    graph.add_node("direct_chat_agent", direct_chat_node)
+
     graph.set_entry_point("router")
-    
-    # Add conditional edges from router
+
     graph.add_conditional_edges(
         "router",
         route_after_router,
@@ -49,20 +48,17 @@ def build_agent_graph():
             "finance_agent": "finance_agent",
             "tech_agent": "tech_agent",
             "general_agent": "general_agent",
-        }
+            "web_agent": "web_agent",
+            "direct_chat_agent": "direct_chat_agent",
+        },
     )
-    
-    # Route from agents to synthesizer
-    graph.add_edge("finance_agent", "synthesizer")
-    graph.add_edge("tech_agent", "synthesizer")
-    graph.add_edge("general_agent", "synthesizer")
-    graph.add_edge("supervisor", "synthesizer")
-    
-    # Final edge to END
+
+    for node in ("finance_agent", "tech_agent", "general_agent", "web_agent", "supervisor"):
+        graph.add_edge(node, "synthesizer")
+
+    graph.add_edge("direct_chat_agent", END)
     graph.add_edge("synthesizer", END)
-    
-    logger.info("Graph construction complete")
-    
+
     return graph.compile()
 
 
@@ -77,6 +73,7 @@ def create_initial_state(query: str) -> Dict[str, Any]:
         "retrieved_docs": {},
         "reranked_docs": {},
         "agent_responses": {},
+        "retrieval_stats": {},
         "final_answer": "",
         "key_themes": [],
         "sources": [],
@@ -85,61 +82,55 @@ def create_initial_state(query: str) -> Dict[str, Any]:
         "error": "",
         "status": "pending",
         "start_time": None,
-        "processing_times": {}
+        "processing_times": {},
     }
+
+
+# Compile the graph once (compiling per request is wasteful)
+try:
+    app = build_agent_graph()
+    logger.info("Agent graph compiled successfully")
+except Exception as e:  # pragma: no cover
+    logger.error(f"Failed to compile agent graph: {e}")
+    app = None
 
 
 def run_workflow(query: str, debug: bool = False) -> Dict[str, Any]:
     """
-    Run the multi-RAG agent workflow
-    
-    Args:
-        query: User query
-        debug: Enable debug logging
-    
-    Returns:
-        Final state with answer and metadata
+    Run the multi-RAG agent workflow.
+
+    Returns the final state. `status` is "complete" only if an answer was
+    actually produced, otherwise "error".
     """
+    global app
     try:
-        # Build workflow
-        workflow = build_agent_graph()
-        
-        # Create initial state
+        if app is None:
+            app = build_agent_graph()
+
         initial_state = create_initial_state(query)
         start_time = time.time()
         initial_state["start_time"] = start_time
-        
+
         if debug:
-            logger.setLevel(logging.DEBUG)
             logger.info(f"Starting workflow with query: {query}")
-        
-        # Execute workflow
-        final_state = workflow.invoke(initial_state)
-        
-        # Calculate processing time
+
+        final_state = app.invoke(initial_state)
+
         duration = time.time() - start_time
         final_state["processing_times"]["total"] = duration
         logger.info(f"Workflow completed in {duration:.2f} seconds")
-        
-        final_state["status"] = "complete"
-        
+
+        if final_state.get("status") == "pending":
+            final_state["status"] = "complete" if final_state.get("final_answer") else "error"
+
         return final_state
-    
+
     except Exception as e:
-        logger.error(f"Error running workflow: {e}")
+        logger.error(f"Error running workflow: {e}", exc_info=True)
         return {
             "status": "error",
             "error": str(e),
-            "final_answer": f"Error processing query: {str(e)}",
+            "final_answer": "Đã xảy ra lỗi khi xử lý câu hỏi. Vui lòng thử lại.",
             "sources": [],
-            "query": query
+            "query": query,
         }
-
-
-# Compile graph as singleton
-try:
-    app = build_agent_graph()
-    logger.info("Agent graph compiled successfully")
-except Exception as e:
-    logger.error(f"Failed to compile agent graph: {e}")
-    app = None

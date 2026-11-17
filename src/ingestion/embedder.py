@@ -1,4 +1,4 @@
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from typing import List, Optional
 from langchain_core.documents import Document
@@ -8,10 +8,8 @@ from config.settings import settings
 
 class VectorStoreBuilder:
     def __init__(self, persist_path: str):
-        self.embeddings = GoogleGenerativeAIEmbeddings(
-            model=settings.embedding_model,
-            google_api_key=settings.google_api_key,
-            output_dimensionality=settings.embedding_dimension
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name=settings.embedding_model
         )
         self.persist_path = persist_path
 

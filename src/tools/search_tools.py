@@ -29,11 +29,13 @@ class SearchTool:
 
 
 class WebSearchTool(SearchTool):
-    """Web search tool (placeholder for actual implementation)"""
+    """Web search tool powered by DuckDuckGo (ddgs)"""
     
     def __init__(self):
         super().__init__("WebSearch")
-        logger.info("Initialized WebSearchTool")
+        from .web_search import web_search_tool
+        self._tool = web_search_tool
+        logger.info("Initialized WebSearchTool with DuckDuckGo backend")
     
     def search(self, query: str, limit: int = 5) -> List[Dict]:
         """
@@ -46,24 +48,7 @@ class WebSearchTool(SearchTool):
         Returns:
             List of search results with title, url, snippet
         """
-        try:
-            # This is a placeholder implementation
-            # In production, integrate with Google Search API, Bing, etc.
-            logger.info(f"Searching web for: {query}")
-            
-            results = [
-                {
-                    "title": f"Result for: {query}",
-                    "url": "https://example.com",
-                    "snippet": "Placeholder search result",
-                    "source": "web"
-                }
-            ]
-            
-            return results[:limit]
-        except Exception as e:
-            logger.error(f"Error in web search: {e}")
-            return []
+        return self._tool.search(query, limit=limit)
 
 
 class KnowledgeBaseTool(SearchTool):

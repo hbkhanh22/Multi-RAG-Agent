@@ -1,113 +1,105 @@
 """
-Configuration settings for Multi-RAG Agent System
-Using Google LLM Models (Gemini) and Embeddings
+Configuration settings for Multi-RAG Agent System.
+
+LLM provider: NVIDIA NIM. Embeddings: local HuggingFace model.
+All relative paths are resolved against the project root, so the app works
+regardless of the directory uvicorn is started from.
 """
 
-from pydantic_settings import BaseSettings
-from typing import Optional
 from pathlib import Path
+from typing import List, Optional
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+_PATH_FIELDS = (
+    "data_dir",
+    "finance_data_path", "tech_data_path", "general_data_path",
+    "finance_store_path", "tech_store_path", "general_store_path",
+    "log_dir",
+)
 
 
 class Settings(BaseSettings):
-    # ============= API Keys & Credentials =============
-    google_api_key: str  # Google API Key (required)
-    
-    # ============= LLM Configuration =============
-    # Default: gemini-2.0-flash (fastest, best for agents)
-    # Alternative: gemini-1.5-pro (more powerful), gemini-1.5-flash (budget)
-    default_llm_model: str = "gemini-2.0-flash"
-    fast_llm_model: str = "gemini-1.5-flash"
-    powerful_llm_model: str = "gemini-2.0-flash"
-    
+    model_config = SettingsConfigDict(
+        env_file=BASE_DIR / ".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # ============= API Keys =============
+    nvidia_api_key: str = ""
+    google_api_key: Optional[str] = None  # unused (kept so old .env files still load)
+
+    # ============= LLM =============
+    default_llm_model: str = "openai/gpt-oss-20b"
+    fast_llm_model: str = "openai/gpt-oss-20b"
+    powerful_llm_model: str = "nvidia/nemotron-3-super-120b-a12b"
     llm_temperature: float = 0.0
     llm_max_tokens: int = 2000
     llm_timeout: int = 300
-    
-    # ============= Embedding Configuration =============
-    # Google's embedding model
-    embedding_model: str = "gemini-embedding-001"
-    embedding_dimension: int = 768
-    embedding_batch_size: int = 100
-    
-    # ============= Retrieval Configuration =============
+
+    # ============= Embedding =============
+    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_dimension: int = 384
+
+    # ============= Chunking / Retrieval =============
     chunk_size: int = 512
     chunk_overlap: int = 64
-    
     top_k_retrieval: int = 10
     top_k_rerank: int = 4
-    
-    # Hybrid retrieval weights (vector + BM25)
+
+    # Hybrid retrieval fusion weights (vector vs BM25)
     vector_weight: float = 0.6
     bm25_weight: float = 0.4
-    
+
     # Reranking
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"
     use_reranker: bool = True
-    
-    # ============= Vector Database Paths =============
-    # Base data directory
+    # Rerank score below this => chunk considered not relevant (fallback kicks in)
+    relevance_threshold: float = -4.0
+
+    # ============= Paths =============
     data_dir: Path = Path("data")
-    
-    # Raw document paths
     finance_data_path: Path = Path("data/raw/finance")
     tech_data_path: Path = Path("data/raw/tech")
     general_data_path: Path = Path("data/raw/general")
-    
-    # Vector store paths
     finance_store_path: Path = Path("data/vectorstores/finance_store")
     tech_store_path: Path = Path("data/vectorstores/tech_store")
     general_store_path: Path = Path("data/vectorstores/general_store")
-    
-    # Processed data path
-    processed_data_path: Path = Path("data/processed")
-    
-    # ============= Agent Configuration =============
-    router_temperature: float = 0.0
-    router_max_tokens: int = 500
-    
-    supervisor_max_iterations: int = 3
-    supervisor_timeout: int = 600
-    
-    synthesizer_temperature: float = 0.0
-    synthesizer_max_tokens: int = 2000
-    
-    # ============= Document Processing =============
-    supported_file_types: list[str] = [".pdf", ".txt", ".md", ".docx"]
+    log_dir: Path = Path("logs")
+
+    # ============= Documents =============
+    supported_file_types: List[str] = [".pdf", ".txt", ".md", ".docx"]
     max_file_size_mb: int = 100
-    
-    # ============= Output Configuration =============
-    include_source_attribution: bool = True
-    include_confidence_scores: bool = True
-    include_processing_time: bool = True
-    
+
+    # ============= API =============
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000"
+    max_batch_queries: int = 10
+
     # ============= Logging =============
     log_level: str = "INFO"
-    log_dir: Path = Path("logs")
-    
-    # ============= Cache =============
-    use_cache: bool = True
-    cache_ttl_seconds: int = 3600  # 1 hour
-    
-    # ============= Performance =============
-    max_concurrent_requests: int = 5
-    request_timeout: int = 300
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+
+    @field_validator(*_PATH_FIELDS, mode="after")
+    @classmethod
+    def _anchor_to_project_root(cls, value: Path) -> Path:
+        return value if value.is_absolute() else BASE_DIR / value
+
+    @property
+    def cors_origin_list(self) -> List[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
 
-# Create settings instance
 settings = Settings()
 
 # Ensure required directories exist
-settings.data_dir.mkdir(parents=True, exist_ok=True)
-settings.finance_data_path.mkdir(parents=True, exist_ok=True)
-settings.tech_data_path.mkdir(parents=True, exist_ok=True)
-settings.general_data_path.mkdir(parents=True, exist_ok=True)
-settings.finance_store_path.mkdir(parents=True, exist_ok=True)
-settings.tech_store_path.mkdir(parents=True, exist_ok=True)
-settings.general_store_path.mkdir(parents=True, exist_ok=True)
-settings.processed_data_path.mkdir(parents=True, exist_ok=True)
-settings.log_dir.mkdir(parents=True, exist_ok=True)
+for _p in (
+    settings.data_dir,
+    settings.finance_data_path, settings.tech_data_path, settings.general_data_path,
+    settings.finance_store_path, settings.tech_store_path, settings.general_store_path,
+    settings.log_dir,
+):
+    _p.mkdir(parents=True, exist_ok=True)

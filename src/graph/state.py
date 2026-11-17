@@ -7,6 +7,11 @@ import operator
 from langchain_core.messages import BaseMessage
 
 
+def merge_dicts(left: Dict, right: Dict) -> Dict:
+    """Reducer: merge two dicts so parallel/sequential nodes can add keys."""
+    return {**(left or {}), **(right or {})}
+
+
 class AgentState(TypedDict):
     """State schema for multi-RAG agent graph"""
     
@@ -24,7 +29,8 @@ class AgentState(TypedDict):
     reranked_docs: Dict[str, List[Dict]]  # {agent_name: [docs]}
     
     # ========== Agent Responses ==========
-    agent_responses: Dict[str, Dict[str, Any]]  # {agent_name: response_dict}
+    agent_responses: Annotated[Dict[str, Dict[str, Any]], merge_dicts]  # {agent_name: response_dict}
+    retrieval_stats: Dict[str, Dict[str, int]]  # {agent_name: {retrieved, reranked}}
     
     # ========== Synthesis ==========
     final_answer: str

@@ -1,0 +1,135 @@
+"""
+Web Agent - Specialist agent for retrieving and synthesizing information from the live web
+"""
+
+from typing import Any, Dict, List, Optional
+import logging
+
+from .base_agent import BaseAgent
+from src.tools.web_search import web_search_tool, web_scraper_tool
+from config.settings import settings
+
+logger = logging.getLogger(__name__)
+
+
+class WebAgent(BaseAgent):
+    """Specialist agent for live web search and online intelligence"""
+    
+    def __init__(self, name: str = "Web Search Agent", model: str = None, temperature: float = 0.1):
+        super().__init__(
+            name=name,
+            model=model or settings.default_llm_model,
+            temperature=temperature
+        )
+        self.search_tool = web_search_tool
+        self.scraper_tool = web_scraper_tool
+        self.domain = "web"
+        logger.info(f"Initialized {name}")
+    
+    def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Run web search pipeline: search, extract, synthesize
+        
+        Args:
+            input_data: Must contain 'query' key
+            
+        Returns:
+            Output dict with answer, sources, metadata
+        """
+        try:
+            query = input_data.get("query", "").strip()
+            if not query:
+                return {
+                    "success": False,
+                    "answer": "Không có câu truy vấn nào được cung cấp.",
+                    "sources": [],
+                    "domain": self.domain
+                }
+            
+            limit = input_data.get("max_results", 5)
+            
+            # Step 1: Execute web search
+            search_results = self.search_tool.search(query, limit=limit)
+            
+            if not search_results:
+                logger.warning(f"No web results found for query: {query}")
+                return {
+                    "success": False,
+                    "answer": f"Không tìm thấy kết quả phù hợp trên Internet cho câu hỏi: '{query}'.",
+                    "sources": [],
+                    "domain": self.domain,
+                    "retrieved_count": 0,
+                    "reranked_count": 0
+                }
+            
+            # Step 2: Format context for LLM
+            formatted_context = self._format_search_results(search_results)
+            
+            # Step 3: Generate synthesized answer with citations
+            answer = self._generate_answer(query, formatted_context)
+            
+            # Step 4: Format sources
+            citations = [
+                {
+                    "source_id": r.get("source_id", idx + 1),
+                    "source": r.get("url", ""),
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "snippet": r.get("snippet", ""),
+                    "agent": "web"
+                }
+                for idx, r in enumerate(search_results)
+            ]
+            
+            return {
+                "success": True,
+                "answer": answer,
+                "sources": citations,
+                "domain": self.domain,
+                "retrieved_count": len(search_results),
+                "reranked_count": len(search_results),
+                "model": self.model
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in WebAgent run: {e}")
+            return {
+                "success": False,
+                "answer": f"Đã xảy ra lỗi khi tìm kiếm web: {str(e)}",
+                "sources": [],
+                "domain": self.domain,
+                "error": str(e)
+            }
+    
+    def _format_search_results(self, results: List[Dict]) -> str:
+        """Format list of search results into markdown context block"""
+        context_parts = []
+        for r in results:
+            part = (
+                f"[Source {r['source_id']}]\n"
+                f"Title: {r['title']}\n"
+                f"URL: {r['url']}\n"
+                f"Content: {r['snippet']}\n"
+            )
+            context_parts.append(part)
+        return "\n".join(context_parts)
+    
+    def _generate_answer(self, query: str, context: str) -> str:
+        """Generate synthesis from web context using LLM"""
+        system_prompt = (
+            "Bạn là Web Search Agent chuyên nghiệp của hệ thống Multi-RAG Agent. "
+            "Nhiệm vụ của bạn là tổng hợp thông tin mới nhất và chính xác từ các kết quả tìm kiếm trên Internet. "
+            "Nguyên tắc trả lời:\n"
+            "1. Trả lời trực tiếp, rõ ràng, mạch lạc bằng chính ngôn ngữ người dùng (tiếng Việt nếu người dùng hỏi tiếng Việt).\n"
+            "2. Trích dẫn rõ ràng nguồn thông tin bằng cách đặt thẻ [Source N] ngay sau luận điểm tương ứng.\n"
+            "3. Nếu các kết quả tìm kiếm mâu thuẫn hoặc không đủ thông tin, hãy nêu rõ điều đó.\n"
+            "4. Định dạng câu trả lời đẹp mắt bằng Markdown (bullet points, bảng, tiêu đề rõ ràng)."
+        )
+        
+        prompt = (
+            f"Câu hỏi của người dùng: {query}\n\n"
+            f"Kết quả tìm kiếm từ Internet:\n{context}\n\n"
+            f"Hãy trả lời chi tiết và trích dẫn [Source N] cho từng thông tin."
+        )
+        
+        return self.invoke([prompt], system_prompt=system_prompt)

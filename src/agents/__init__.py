@@ -7,6 +7,7 @@ from .rag_agent import RAGAgent
 from .router_agent import RouterAgent
 from .supervisor_agent import SupervisorAgent
 from .synthesizer_agent import SynthesizerAgent
+from .web_agent import WebAgent
 
 __all__ = [
     "BaseAgent",
@@ -14,4 +15,5 @@ __all__ = [
     "RouterAgent",
     "SupervisorAgent",
     "SynthesizerAgent",
+    "WebAgent",
 ]

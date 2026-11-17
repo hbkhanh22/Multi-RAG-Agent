@@ -17,3 +17,4 @@ logs/
 data/vectorstores/
 data/generated/
 data/processed/
+notebooks/data/vectorstores/

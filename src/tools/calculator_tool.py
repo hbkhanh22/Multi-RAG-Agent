@@ -2,11 +2,57 @@
 Calculator Tool - Performs mathematical calculations for agents
 """
 
+import ast
 import logging
-import re
+import math
+import operator
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+MAX_EXPRESSION_LENGTH = 200
+MAX_EXPONENT = 1000
+
+
+def _safe_pow(base: float, exponent: float) -> float:
+    """Power with a bounded exponent (prevents 9**9**9 style CPU/memory bombs)."""
+    if abs(exponent) > MAX_EXPONENT:
+        raise ValueError("Exponent too large")
+    return float(base) ** float(exponent)
+
+
+_BINARY_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: _safe_pow,
+}
+_UNARY_OPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+_FUNCTIONS = {
+    "abs": abs, "round": round, "max": max, "min": min, "sum": sum,
+    "sqrt": math.sqrt, "pow": _safe_pow,
+}
+
+
+def _eval_node(node: ast.AST) -> Any:
+    """Evaluate a whitelisted AST node (numbers, + - * / // % **, a few functions)."""
+    if isinstance(node, ast.Expression):
+        return _eval_node(node.body)
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in _BINARY_OPS:
+        return _BINARY_OPS[type(node.op)](_eval_node(node.left), _eval_node(node.right))
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPS:
+        return _UNARY_OPS[type(node.op)](_eval_node(node.operand))
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return [_eval_node(e) for e in node.elts]
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id in _FUNCTIONS and not node.keywords):
+        return _FUNCTIONS[node.func.id](*[_eval_node(a) for a in node.args])
+    raise ValueError(f"Unsupported expression element: {type(node).__name__}")
 
 
 class CalculatorTool:
@@ -17,56 +63,30 @@ class CalculatorTool:
     
     def evaluate(self, expression: str) -> Optional[float]:
         """
-        Evaluate mathematical expression
-        
-        Args:
-            expression: Mathematical expression (e.g., "2+2*3")
-        
-        Returns:
-            Result of calculation or None on error
+        Safely evaluate a mathematical expression (e.g. "2+2*3", "sqrt(16)+max(1,2)").
+
+        Uses a whitelisted AST walker - never eval(). Returns None on any error.
         """
         try:
-            # Sanitize input to prevent injection
-            if not self._is_safe_expression(expression):
-                logger.warning(f"Unsafe expression rejected: {expression}")
+            if not expression or len(expression) > MAX_EXPRESSION_LENGTH:
+                logger.warning("Expression empty or too long")
                 return None
-            
-            # Use eval safely with restricted namespace
-            safe_dict = {
-                "abs": abs,
-                "round": round,
-                "max": max,
-                "min": min,
-                "sum": sum,
-                "pow": pow,
-                "sqrt": lambda x: x ** 0.5,
-                "__builtins__": {},
-            }
-            
-            result = eval(expression, safe_dict)
+
+            tree = ast.parse(expression.strip(), mode="eval")
+            result = _eval_node(tree)
             logger.info(f"Calculation: {expression} = {result}")
             return float(result)
-        
+
         except ZeroDivisionError:
             logger.error("Division by zero error")
+            return None
+        except (ValueError, TypeError, SyntaxError, OverflowError, RecursionError) as e:
+            logger.warning(f"Calculation rejected/failed for {expression!r}: {e}")
             return None
         except Exception as e:
             logger.error(f"Calculation error: {e}")
             return None
-    
-    def _is_safe_expression(self, expression: str) -> bool:
-        """Check if expression is safe to evaluate"""
-        # Only allow numbers, operators, parentheses, and math functions
-        safe_pattern = r'^[0-9+\-*/%().\s]*$'
-        
-        # Additional check: no dangerous keywords
-        dangerous_keywords = ['import', 'exec', 'eval', 'open', 'os', '__']
-        for keyword in dangerous_keywords:
-            if keyword in expression.lower():
-                return False
-        
-        return bool(re.match(safe_pattern, expression))
-    
+
     def add(self, a: float, b: float) -> float:
         """Add two numbers"""
         return a + b

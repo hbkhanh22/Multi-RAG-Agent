@@ -24,12 +24,12 @@ class RouterAgent(BaseAgent):
             temperature=0.0
         )
         
-        self.domains = ["finance", "tech", "general"]
+        self.domains = ["finance", "tech", "general", "web"]
         self.multi_domain_threshold = 0.5
     
     def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Route query to appropriate domain(s)
+        Route query to appropriate domain(s). All classification is done by LLM.
         
         Args:
             input_data: Must contain 'query' key
@@ -38,20 +38,19 @@ class RouterAgent(BaseAgent):
             Output dict with routing decision and confidence
         """
         try:
-            query = input_data.get("query", "")
+            query = input_data.get("query", "").strip()
             if not query:
                 return {
-                    "route": "general",
-                    "agents": ["general"],
+                    "primary_domain": "direct_chat",
+                    "all_domains": ["direct_chat"],
+                    "domain_scores": {"direct_chat": 1.0},
+                    "route": "direct_chat",
+                    "agents": ["direct_chat"],
                     "confidence": 1.0,
-                    "reasoning": "Empty query - routing to general domain"
+                    "reasoning": "Empty query — handled as direct chat"
                 }
             
-            self.add_to_history("user", f"Route query: {query}")
-            
             result = self._classify_query(query)
-            
-            self.add_to_history("assistant", json.dumps(result))
             
             return result
         
@@ -76,28 +75,37 @@ class RouterAgent(BaseAgent):
             Classification result
         """
         try:
-            system_prompt = """You are an expert query classifier. Analyze the query and classify it into one or more domains.
+            system_prompt = """You are a query router for an intelligent Multi-RAG & Autonomous Agent system.
+Your task is to analyze the user's message and determine the optimal routing:
+- direct_chat: Casual conversation, greetings, meta-questions about the AI, no external information needed.
+  Examples: "Hello!", "Xin chào", "Cảm ơn bạn", "Bạn là ai?", "Bạn làm được gì?", "Tạm biệt"
+- web: Real-time queries, current news, live updates, today's events, weather, stock quotes today, latest software versions, or explicit requests to search online / internet / Google.
+  Examples: "Tin tức mới nhất hôm nay", "Giá vàng / Bitcoin hôm nay bao nhiêu?", "Tìm kiếm web về...", "Thời tiết Hà Nội hôm nay"
+- finance: In-depth financial analysis, corporate filings, balance sheets, economics, bond markets, banking regulations, and historical financial concepts stored in internal docs.
+- tech: Programming languages, AI/ML theory, system architecture, backend/frontend engineering, DevOps, internal tech documentations.
+- general: General knowledge, history, geography, encyclopedic topics stored in internal docs.
+- multi: Complex queries requiring information from multiple domains (e.g. tech + finance, or finance + web).
 
-Domains:
-- finance: stocks, investment, economics, financial reports, trading, cryptocurrencies, bonds, mutual funds, financial analysis
-- tech: programming, AI, software, hardware, cloud computing, DevOps, cybersecurity, databases, web development
-- general: history, science, culture, general knowledge, news, entertainment, education, sports, politics
+Key rules:
+1. ONLY choose direct_chat when there is NO lookup needed.
+2. If the user asks about current events, breaking news, "hôm nay", "mới nhất", "bây giờ", or requests web search, choose 'web'.
+3. If the query requires both domain docs and web search, choose 'multi' with both in all_domains.
 
-Respond with ONLY a valid JSON object (no other text):
+Respond with ONLY a valid JSON object, no markdown, no explanation outside the JSON:
 {
-  "primary_domain": "finance|tech|general",
-  "all_domains": ["finance", "tech", "general"],
-  "domain_scores": {"finance": 0.8, "tech": 0.3, "general": 0.1},
-  "route": "finance|tech|general|multi",
+  "primary_domain": "finance|tech|general|web|direct_chat",
+  "all_domains": ["finance", "tech", "general", "web", "direct_chat"],
+  "domain_scores": {"finance": 0.0, "tech": 0.0, "general": 0.0, "web": 0.0, "direct_chat": 0.0},
+  "route": "finance|tech|general|web|multi|direct_chat",
   "confidence": 0.95,
-  "reasoning": "brief explanation"
+  "reasoning": "one-sentence explanation"
 }"""
             
             prompt = f"""Classify this query:
 
 Query: "{query}"
 
-Respond with JSON only (no markdown, no code blocks):"""
+Respond with JSON only:"""
             
             response = self.invoke([prompt], system_prompt=system_prompt)
             
@@ -147,21 +155,38 @@ Respond with JSON only (no markdown, no code blocks):"""
                         raise ValueError("No JSON found in response")
             
             # Validate and normalize response
-            result = {
-                "primary_domain": data.get("primary_domain", "general"),
-                "all_domains": data.get("all_domains", ["general"]),
-                "domain_scores": data.get("domain_scores", {}),
-                "route": data.get("route", "general"),
-                "confidence": float(data.get("confidence", 0.5)),
-                "reasoning": data.get("reasoning", "")
-            }
-            
-            # Convert route and all_domains to proper format
-            if result["route"] == "multi":
-                # Multi-domain routing
-                result["agents"] = result["all_domains"]
+            valid_domains = [d for d in self.domains]
+            route = str(data.get("route", "general")).strip().lower()
+            all_domains = data.get("all_domains") or []
+            if not isinstance(all_domains, list):
+                all_domains = []
+
+            if route == "multi":
+                agents = [d for d in all_domains if d in valid_domains]
+                agents = list(dict.fromkeys(agents))  # dedupe, keep order
+                if not agents:
+                    route, agents = "general", ["general"]
+                elif len(agents) == 1:
+                    route = agents[0]
+            elif route in valid_domains or route == "direct_chat":
+                agents = [route]
             else:
-                result["agents"] = [result["route"]]
+                route, agents = "general", ["general"]
+
+            try:
+                confidence = float(data.get("confidence", 0.5))
+            except (TypeError, ValueError):
+                confidence = 0.5
+
+            result = {
+                "primary_domain": data.get("primary_domain", route),
+                "all_domains": agents,
+                "domain_scores": data.get("domain_scores", {}),
+                "route": route,
+                "agents": agents,
+                "confidence": confidence,
+                "reasoning": data.get("reasoning", ""),
+            }
             
             logger.info(f"Classified to: {result['route']} with confidence {result['confidence']}")
             return result

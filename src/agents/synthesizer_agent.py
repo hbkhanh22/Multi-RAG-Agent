@@ -1,234 +1,213 @@
 """
-Synthesizer Agent - Combines and synthesizes final answers from all sources
+Synthesizer Agent - Produces the final answer from one or more agent responses.
+
+- Single agent  -> its answer and citations are returned untouched (no extra LLM
+  call, no truncation, [Source N] markers stay valid).
+- Multiple agents -> source numbers are made globally unique, then ONE LLM call
+  merges the answers and extracts key themes.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
+import json
 import logging
+import re
 
 from .base_agent import BaseAgent
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+_SOURCE_RE = re.compile(r"\[Source (\d+)\]")
+MAX_CHARS_PER_AGENT = 6000
+
 
 class SynthesizerAgent(BaseAgent):
     """Synthesizes final answers from multiple sources"""
-    
+
     def __init__(self):
-        """Initialize synthesizer agent"""
         super().__init__(
             name="Answer Synthesizer",
             model=settings.default_llm_model,
-            temperature=0.0
+            temperature=0.0,
         )
-    
+
     def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Synthesize final answer from multiple sources
-        
         Args:
-            input_data: Must contain 'query' and 'agent_responses' keys
-        
-        Returns:
-            Synthesized answer with metadata
+            input_data: Must contain 'query' and 'agent_responses'
         """
         try:
             query = input_data.get("query", "")
             agent_responses = input_data.get("agent_responses", {})
-            
+
             if not agent_responses:
                 return {
                     "success": False,
-                    "synthesized_answer": "No agent responses to synthesize",
-                    "sources": []
+                    "synthesized_answer": "Không có phản hồi nào từ các agent.",
+                    "sources": [],
+                    "retrieval_stats": {},
                 }
-            
-            self.add_to_history("user", f"Synthesize responses for: {query}")
-            
-            # Step 1: Extract content from all sources
-            source_content = self._extract_source_content(agent_responses)
-            
-            # Step 2: Identify key themes
-            themes = self._identify_themes(query, source_content)
-            
-            # Step 3: Synthesize final answer
-            final_answer = self._synthesize_content(query, source_content, themes)
-            
-            # Step 4: Extract citations
-            citations = self._extract_citations(agent_responses)
-            
-            # Step 5: Create output
-            output = {
+
+            stats = self._collect_stats(agent_responses)
+            usable = {
+                name: r for name, r in agent_responses.items()
+                if isinstance(r, dict) and r.get("success") and r.get("answer")
+            }
+
+            if not usable:
+                return {
+                    "success": False,
+                    "query": query,
+                    "synthesized_answer": self._failure_message(agent_responses),
+                    "key_themes": [],
+                    "sources": [],
+                    "retrieval_stats": stats,
+                }
+
+            if len(usable) == 1:
+                name, resp = next(iter(usable.items()))
+                answer = resp["answer"]
+                themes: List[str] = []
+                citations = [{**c, "agent": name} for c in resp.get("sources", []) if isinstance(c, dict)]
+            else:
+                answers, citations = self._merge_with_global_numbering(usable)
+                answer, themes = self._synthesize_combined(query, answers)
+
+            return {
                 "success": True,
                 "query": query,
-                "synthesized_answer": final_answer,
+                "synthesized_answer": answer,
                 "key_themes": themes,
                 "sources": citations,
                 "source_count": len(citations),
-                "agent_count": len(agent_responses)
+                "agent_count": len(usable),
+                "retrieval_stats": stats,
             }
-            
-            self.add_to_history("assistant", final_answer)
-            
-            return output
-        
+
         except Exception as e:
-            logger.error(f"Error in synthesizer: {e}")
+            logger.error(f"Error in synthesizer: {e}", exc_info=True)
             return {
                 "success": False,
-                "synthesized_answer": f"Error in synthesis: {str(e)}",
+                "synthesized_answer": "Đã xảy ra lỗi khi tổng hợp câu trả lời.",
                 "sources": [],
-                "error": str(e)
+                "retrieval_stats": {},
+                "error": str(e),
             }
-    
-    def _extract_source_content(self, agent_responses: Dict[str, Any]) -> Dict[str, List[str]]:
-        """Extract answer content from all agent responses"""
-        sources = {}
-        
-        for agent_name, response in agent_responses.items():
-            if isinstance(response, dict) and response.get("success"):
-                answer = response.get("answer", "")
-                if answer:
-                    sources[agent_name] = answer
-        
-        return sources
-    
-    def _identify_themes(self, query: str, source_content: Dict[str, str]) -> List[str]:
-        """Identify key themes across all sources"""
-        try:
-            if not source_content:
-                return []
-            
-            # Prepare content summary for analysis
-            content_summary = "\n\n".join([
-                f"[{k}]: {v[:500]}"  # Limit to first 500 chars
-                for k, v in source_content.items()
-            ])
-            
-            system_prompt = """Extract 3-5 key themes or main points from the provided responses.
-These should be the central ideas or topics that appear across the content.
-Return as a JSON array of strings."""
-            
-            prompt = f"""Query: {query}
 
-Content from multiple sources:
-{content_summary}
+    # ------------------------------------------------------------------ helpers
 
-Extract the key themes:"""
-            
-            response = self.invoke([prompt], system_prompt=system_prompt)
-            
-            # Try to parse JSON
-            import json
-            try:
-                themes = json.loads(response)
-                if isinstance(themes, list):
-                    return themes[:5]  # Limit to 5 themes
-            except json.JSONDecodeError:
-                # Extract themes from text
-                lines = response.split("\n")
-                themes = [line.strip("- ").strip() for line in lines if line.strip().startswith("-")]
-                return themes[:5]
-        
-        except Exception as e:
-            logger.error(f"Error identifying themes: {e}")
-            return []
-    
-    def _synthesize_content(self, query: str, source_content: Dict[str, str], themes: List[str]) -> str:
-        """Synthesize content into coherent final answer"""
-        try:
-            # Format sources for LLM
-            formatted_sources = self._format_sources_for_synthesis(source_content)
-            
-            themes_str = "\n".join([f"- {theme}" for theme in themes]) if themes else "No identified themes"
-            
-            system_prompt = """You are an expert at synthesizing information from multiple sources.
-Your task is to create a comprehensive, well-organized answer that:
-1. Integrates insights from all sources
-2. Eliminates redundancy
-3. Maintains logical flow and clarity
-4. Preserves source attributions
-5. Flags any contradictions
-6. Uses clear formatting and structure"""
-            
-            prompt = f"""Original Query: {query}
-
-Key Themes Identified:
-{themes_str}
-
-Content from Multiple Sources:
-{formatted_sources}
-
-Please create a comprehensive synthesized answer that integrates all these perspectives.
-Use [Source: agency] notation to attribute information.
-Organize the answer by theme or topic for clarity."""
-            
-            synthesized = self.invoke([prompt], system_prompt=system_prompt)
-            return synthesized
-        
-        except Exception as e:
-            logger.error(f"Error synthesizing content: {e}")
-            # Fallback: simple concatenation
-            return self._simple_synthesis(source_content)
-    
-    def _format_sources_for_synthesis(self, source_content: Dict[str, str]) -> str:
-        """Format source content for LLM synthesis"""
-        formatted = ""
-        for source_name, content in source_content.items():
-            formatted += f"\n[Source: {source_name.upper()}]\n"
-            formatted += f"{content[:1000]}\n"  # Limit to 1000 chars per source
-            formatted += "-" * 80 + "\n"
-        return formatted
-    
-    def _simple_synthesis(self, source_content: Dict[str, str]) -> str:
-        """Simple synthesis when LLM synthesis fails"""
-        synthesis = "## Answer from Multiple Sources\n\n"
-        
-        for source_name, content in source_content.items():
-            synthesis += f"### {source_name.capitalize()}\n"
-            synthesis += f"{content}\n\n"
-        
-        return synthesis
-    
-    def _extract_citations(self, agent_responses: Dict[str, Any]) -> List[Dict]:
-        """Extract all citations from agent responses"""
-        citations = []
-        
-        for agent_name, response in agent_responses.items():
-            if isinstance(response, dict) and response.get("success"):
-                agent_sources = response.get("sources", [])
-                
-                for source in agent_sources:
-                    if isinstance(source, dict):
-                        citation = {
-                            "agent": agent_name,
-                            "source_id": source.get("source_id"),
-                            "source": source.get("source"),
-                            "page": source.get("page")
-                        }
-                        citations.append(citation)
-                
-                # Add metadata about retrieval
-                citations.append({
-                    "agent": agent_name,
-                    "retrieved_count": response.get("retrieved_count", 0),
-                    "reranked_count": response.get("reranked_count", 0),
-                    "type": "metadata"
-                })
-        
-        return citations
-    
-    def create_structured_output(self, synthesis_result: Dict[str, Any]) -> Dict[str, Any]:
-        """Create structured output with all metadata"""
+    @staticmethod
+    def _collect_stats(agent_responses: Dict[str, Any]) -> Dict[str, Dict[str, int]]:
+        """Retrieval statistics per agent (kept separate from citations)."""
         return {
-            "answer": synthesis_result.get("synthesized_answer", ""),
-            "query": synthesis_result.get("query", ""),
-            "themes": synthesis_result.get("key_themes", []),
-            "citations": synthesis_result.get("sources", []),
-            "metadata": {
-                "synthesizer_model": self.model,
-                "total_agents": synthesis_result.get("agent_count", 0),
-                "total_sources": synthesis_result.get("source_count", 0),
-                "synthesis_status": "success" if synthesis_result.get("success") else "failed"
+            name: {
+                "retrieved": int(r.get("retrieved_count", 0) or 0),
+                "reranked": int(r.get("reranked_count", 0) or 0),
             }
+            for name, r in agent_responses.items() if isinstance(r, dict)
         }
+
+    @staticmethod
+    def _failure_message(agent_responses: Dict[str, Any]) -> str:
+        details = [
+            r.get("answer") for r in agent_responses.values()
+            if isinstance(r, dict) and r.get("answer")
+        ]
+        base = "Không thể tạo câu trả lời cho câu hỏi này."
+        return base + ("\n\n" + "\n".join(details) if details else "")
+
+    @staticmethod
+    def _merge_with_global_numbering(
+        usable: Dict[str, Dict[str, Any]],
+    ) -> Tuple[Dict[str, str], List[Dict[str, Any]]]:
+        """
+        Each agent numbers its sources from 1. Shift every agent's numbers by a
+        running offset so [Source N] is unique across the merged answer.
+        """
+        offset = 0
+        answers: Dict[str, str] = {}
+        citations: List[Dict[str, Any]] = []
+
+        for name, resp in usable.items():
+            sources = [c for c in resp.get("sources", []) if isinstance(c, dict)]
+            width = max(
+                int(resp.get("reranked_count") or 0),
+                max((int(c.get("source_id") or 0) for c in sources), default=0),
+            )
+
+            answers[name] = _SOURCE_RE.sub(
+                lambda m, off=offset: f"[Source {int(m.group(1)) + off}]", resp["answer"]
+            )
+            for c in sources:
+                sid = c.get("source_id")
+                citations.append({
+                    **c,
+                    "agent": name,
+                    "source_id": int(sid) + offset if sid is not None else None,
+                })
+            offset += width
+
+        return answers, citations
+
+    def _synthesize_combined(self, query: str, answers: Dict[str, str]) -> Tuple[str, List[str]]:
+        """One LLM call -> (answer, themes)."""
+        formatted = ""
+        for name, content in answers.items():
+            formatted += f"\n[AGENT: {name.upper()}]\n{content[:MAX_CHARS_PER_AGENT]}\n" + "-" * 60 + "\n"
+
+        system_prompt = """You are an expert at merging answers from several specialist agents.
+
+Return ONLY valid JSON (no markdown fences, no extra text):
+{
+  "answer": "<merged answer, markdown allowed>",
+  "themes": ["theme 1", "theme 2", "theme 3"]
+}
+
+Rules for "answer":
+- Answer in the same language as the user's question.
+- Integrate all agents' insights, remove redundancy, flag contradictions.
+- Keep the citation markers like [Source 3] EXACTLY as they appear in the agent
+  answers. Never invent, renumber or drop them.
+- Use clear headings and structure.
+"themes" must contain 3-5 short key points."""
+
+        prompt = f"Query: {query}\n\nAgent answers:\n{formatted}\nRespond with JSON only:"
+
+        try:
+            raw = self.invoke([prompt], system_prompt=system_prompt)
+            data = self._parse_json(raw)
+
+            answer = str(data.get("answer", "")).strip()
+            themes = data.get("themes", [])
+            themes = [str(t) for t in themes][:5] if isinstance(themes, list) else []
+
+            if not answer:
+                return self._simple_synthesis(answers), themes
+            return answer, themes
+
+        except Exception as e:
+            logger.error(f"Error in combined synthesis: {e}")
+            return self._simple_synthesis(answers), []
+
+    @staticmethod
+    def _parse_json(raw: str) -> Dict[str, Any]:
+        """Parse a JSON object, tolerating markdown fences / surrounding text."""
+        text = (raw or "").strip()
+        try:
+            return json.loads(text, strict=False)
+        except json.JSONDecodeError:
+            m = re.search(r"\{.*\}", text, re.DOTALL)
+            if not m:
+                return {}
+            try:
+                return json.loads(m.group(0), strict=False)
+            except json.JSONDecodeError:
+                return {}
+
+    @staticmethod
+    def _simple_synthesis(answers: Dict[str, str]) -> str:
+        """Fallback: concatenate agent answers."""
+        parts = ["## Tổng hợp từ nhiều nguồn\n"]
+        for name, content in answers.items():
+            parts.append(f"### {name.capitalize()}\n{content}\n")
+        return "\n".join(parts)
