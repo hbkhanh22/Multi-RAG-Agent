@@ -10,12 +10,40 @@ import logging
 from typing import Dict, Any
 
 from langchain_core.messages import AIMessage
+from langgraph.config import get_stream_writer
 
+from src.agents.base_agent import BaseAgent
 from src.agents import RouterAgent, RAGAgent, SupervisorAgent, SynthesizerAgent, WebAgent
 from src.graph.state import AgentState
 from src.utils import Timer
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+
+def emit(event: Dict[str, Any]) -> None:
+    """Send a progress/token event to the stream consumer (no-op outside a streamed run)."""
+    try:
+        get_stream_writer()(event)
+    except Exception:
+        pass
+
+
+class ChatAgent(BaseAgent):
+    """Plain conversational agent for small talk (fast model, no retrieval)."""
+
+    def __init__(self):
+        super().__init__(
+            name="Chat Agent",
+            model=settings.chat_llm_model or settings.default_llm_model,
+            temperature=0.5,
+            max_tokens=settings.chat_max_tokens,
+        )
+
+    def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:  # pragma: no cover - unused
+        return {}
+
 
 # Agents are created once and shared (the supervisor reuses the same instances).
 router_agent = RouterAgent()
@@ -27,11 +55,13 @@ rag_agents = {
     "general": RAGAgent("general"),
 }
 supervisor_agent = SupervisorAgent(agents={**rag_agents, "web": web_agent})
+chat_agent = ChatAgent()
 
 
 def router_node(state: AgentState) -> Dict[str, Any]:
     """Route query to appropriate agents"""
     logger.info("=== ROUTER NODE ===")
+    emit({"type": "stage", "stage": "routing"})
 
     with Timer("Router"):
         result = router_agent.run({"query": state["query"]})
@@ -39,6 +69,7 @@ def router_node(state: AgentState) -> Dict[str, Any]:
     route = result.get("route", "general")
     agents = result.get("agents", ["general"])
     logger.info(f"Route: {route}, Agents: {agents}")
+    emit({"type": "route", "route": route, "agents": agents})
 
     return {
         "route": route,
@@ -48,8 +79,13 @@ def router_node(state: AgentState) -> Dict[str, Any]:
 
 
 def _run_agent(name: str, agent, state: AgentState) -> Dict[str, Any]:
+    emit({"type": "stage", "stage": "retrieving"})
     with Timer(f"{name} agent"):
-        result = agent.run({"query": state["query"]})
+        # Single-agent route: the answer is passed through unchanged, so stream it live
+        result = agent.run({
+            "query": state["query"],
+            "on_token": lambda t: emit({"type": "token", "text": t}),
+        })
     logger.info(f"{name} result: success={result.get('success')}")
     return {"agent_responses": {name: result}}
 
@@ -78,6 +114,7 @@ def web_agent_node(state: AgentState) -> Dict[str, Any]:
 def supervisor_node(state: AgentState) -> Dict[str, Any]:
     """Run several specialist agents in parallel for multi-domain queries"""
     logger.info("=== SUPERVISOR NODE ===")
+    emit({"type": "stage", "stage": "retrieving"})
 
     with Timer("Supervisor"):
         result = supervisor_agent.run({
@@ -101,6 +138,8 @@ def synthesizer_node(state: AgentState) -> Dict[str, Any]:
             "status": "error",
         }
 
+    if len(agent_responses) > 1:
+        emit({"type": "stage", "stage": "synthesizing"})
     with Timer("Synthesizer"):
         result = synthesizer_agent.run({
             "query": state["query"],
@@ -133,7 +172,11 @@ def direct_chat_node(state: AgentState) -> Dict[str, Any]:
 
     with Timer("Direct Chat"):
         try:
-            response_text = router_agent.invoke([state["query"]], system_prompt=system_prompt)
+            response_text = chat_agent.invoke(
+                [state["query"]],
+                system_prompt=system_prompt,
+                on_token=lambda t: emit({"type": "token", "text": t}),
+            )
             status = "complete"
         except Exception as e:
             logger.error(f"Direct chat failed: {e}")

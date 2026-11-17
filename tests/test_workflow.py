@@ -55,3 +55,25 @@ def test_messages_not_duplicated(fake_llm, fake_web, tech_ready):
     """Regression: nodes returned the whole state, re-applying the `messages` reducer."""
     r = run(MCP_QUERY)
     assert len(r["messages"]) == 2  # user question + final AI answer
+
+
+def test_greeting_skips_router_llm(fake_llm):
+    """Fast path: small talk must not cost a router LLM call."""
+    r = run("Xin chào")
+    assert r["status"] == "complete" and r["final_answer"].startswith("Chào bạn")
+    assert not any("query router" in c for c in fake_llm.calls)
+
+
+def test_stream_emits_tokens_then_final(fake_llm, fake_web, tech_ready):
+    from src.graph import stream_workflow
+    events = list(stream_workflow(MCP_QUERY))
+    types = [e["type"] for e in events]
+    assert types[0] == "stage" and "route" in types and types[-1] == "final"
+    streamed = "".join(e["text"] for e in events if e["type"] == "token")
+    assert streamed == events[-1]["state"]["final_answer"] == "Docs say so [Source 1]"
+
+
+def test_stream_direct_chat_tokens(fake_llm):
+    from src.graph import stream_workflow
+    events = list(stream_workflow("Xin chào"))
+    assert "".join(e["text"] for e in events if e["type"] == "token") == events[-1]["state"]["final_answer"]

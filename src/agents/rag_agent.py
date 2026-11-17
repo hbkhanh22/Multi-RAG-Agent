@@ -45,7 +45,7 @@ class RAGAgent(BaseAgent):
                 return {"success": False, "answer": "No query provided", "sources": [], "domain": self.domain}
 
             documents, retrieved_count, fallback = self._gather_context(query)
-            answer, citations = self._generate(query, documents)
+            answer, citations = self._generate(query, documents, input_data.get("on_token"))
 
             return {
                 "success": True,
@@ -176,7 +176,7 @@ class RAGAgent(BaseAgent):
 
     # ----------------------------------------------------------- generation
 
-    def _generate(self, query: str, documents: List[Document]) -> Tuple[str, List[Dict]]:
+    def _generate(self, query: str, documents: List[Document], on_token=None) -> Tuple[str, List[Dict]]:
         """Generate an answer from documents"""
         try:
             system_prompt = f"""You are a helpful assistant specializing in the {self.domain} domain.
@@ -199,7 +199,7 @@ Please provide a comprehensive answer with citations:"""
                     "Answer from your general knowledge and note this clearly."
                 )
 
-            answer = self.invoke([prompt], system_prompt=system_prompt)
+            answer = self.invoke([prompt], system_prompt=system_prompt, on_token=on_token)
             return answer, self._extract_citations(documents, answer)
 
         except Exception as e:

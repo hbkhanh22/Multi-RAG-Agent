@@ -95,6 +95,36 @@ except Exception as e:  # pragma: no cover
     app = None
 
 
+def stream_workflow(query: str):
+    """
+    Run the workflow and yield events as it progresses:
+      {"type": "stage"|"route"|"token", ...}  while running
+      {"type": "final", "state": {...}}       once, at the end (or {"type": "error"})
+    """
+    global app
+    try:
+        if app is None:
+            app = build_agent_graph()
+        initial_state = create_initial_state(query)
+        start = time.time()
+        initial_state["start_time"] = start
+
+        final_state: Dict[str, Any] = dict(initial_state)
+        for mode, payload in app.stream(initial_state, stream_mode=["values", "custom"]):
+            if mode == "custom":
+                yield payload
+            else:
+                final_state = payload
+
+        final_state.setdefault("processing_times", {})["total"] = time.time() - start
+        if final_state.get("status") == "pending":
+            final_state["status"] = "complete" if final_state.get("final_answer") else "error"
+        yield {"type": "final", "state": final_state}
+    except Exception as e:
+        logger.error(f"Error streaming workflow: {e}", exc_info=True)
+        yield {"type": "error", "message": str(e)}
+
+
 def run_workflow(query: str, debug: bool = False) -> Dict[str, Any]:
     """
     Run the multi-RAG agent workflow.

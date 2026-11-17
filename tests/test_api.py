@@ -51,3 +51,27 @@ def test_internal_errors_are_not_leaked(client, monkeypatch):
 def test_batch_limit(client):
     r = client.post("/api/query/batch", json={"queries": ["q"] * 11})
     assert r.status_code == 422
+
+
+def test_stream_endpoint_sse(client, monkeypatch):
+    import json
+    import api.routes as routes
+
+    def fake_stream(q):
+        yield {"type": "stage", "stage": "routing"}
+        yield {"type": "token", "text": "Hi"}
+        yield {"type": "final", "state": {"status": "complete", "final_answer": "Hi", "route": "direct_chat",
+                                           "sources": [], "processing_times": {"total": 0.1}}}
+    monkeypatch.setattr(routes, "stream_workflow", fake_stream)
+    r = client.post("/api/query/stream", json={"query": "hi"})
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+    events = [json.loads(b[6:]) for b in r.text.split("\n\n") if b.startswith("data: ")]
+    assert [e["type"] for e in events] == ["stage", "token", "final"]
+    assert events[-1]["response"]["final_answer"] == "Hi" and events[-1]["response"]["success"] is True
+
+
+def test_stream_endpoint_hides_errors(client, monkeypatch):
+    import api.routes as routes
+    monkeypatch.setattr(routes, "stream_workflow", lambda q: iter([{"type": "error", "message": "secret detail"}]))
+    r = client.post("/api/query/stream", json={"query": "hi"})
+    assert "secret" not in r.text and "trace id" in r.text

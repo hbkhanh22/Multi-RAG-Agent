@@ -6,11 +6,50 @@ from typing import Any, Dict, List
 import logging
 import json
 import re
+import unicodedata
 
 from .base_agent import BaseAgent
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------- fast path
+# Pure small talk never needs retrieval, so it must not wait for an LLM call to be
+# classified. Matching is on the whole message (accents/punctuation ignored).
+_SMALLTALK = re.compile(
+    r"^(?:"
+    r"xin chao|chao|chao buoi (?:sang|trua|chieu|toi)|hello|hi|hey|hola|alo|yo|"
+    r"good (?:morning|afternoon|evening|night)|"
+    r"cam on|thanks|thank you|thank u|cam on ban|"
+    r"tam biet|bye|goodbye|see you|hen gap lai|"
+    r"ok|oke|okay|duoc roi|tuyet voi|hay qua|"
+    r"ban khoe khong|khoe khong|how are you|"
+    r"ban la ai|ban ten gi|who are you|what is your name|"
+    r"ban (?:co the |giup duoc )?lam (?:duoc )?gi|what can you do|ban giup duoc gi"
+    r")(?:\s+(?:a|ah|nhe|nha|nhen|ban|oi|bot|ai|assistant|rat|nhieu|nhe|em|anh|chi|ban oi|ha|va|!))*$"
+)
+
+
+def _normalize(text: str) -> str:
+    text = unicodedata.normalize("NFD", text.lower().replace("đ", "d"))
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", text)).strip()
+
+
+def fast_route(query: str):
+    """Return a direct_chat routing decision for obvious small talk, else None."""
+    if len(query) <= 60 and _SMALLTALK.match(_normalize(query)):
+        return {
+            "primary_domain": "direct_chat",
+            "all_domains": ["direct_chat"],
+            "domain_scores": {"direct_chat": 1.0},
+            "route": "direct_chat",
+            "agents": ["direct_chat"],
+            "confidence": 1.0,
+            "reasoning": "Small talk (fast path, no LLM)",
+        }
+    return None
 
 
 class RouterAgent(BaseAgent):
@@ -20,8 +59,9 @@ class RouterAgent(BaseAgent):
         """Initialize router agent"""
         super().__init__(
             name="Query Router",
-            model=settings.default_llm_model,
-            temperature=0.0
+            model=settings.router_llm_model or settings.default_llm_model,
+            temperature=0.0,
+            max_tokens=settings.router_max_tokens,
         )
         
         self.domains = ["finance", "tech", "general", "web"]
@@ -50,7 +90,7 @@ class RouterAgent(BaseAgent):
                     "reasoning": "Empty query — handled as direct chat"
                 }
             
-            result = self._classify_query(query)
+            result = fast_route(query) or self._classify_query(query)
             
             return result
         

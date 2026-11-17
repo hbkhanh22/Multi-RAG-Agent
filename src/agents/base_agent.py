@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 class BaseAgent(ABC):
     """Abstract base class for all agents"""
     
-    def __init__(self, name: str, model: str = None, temperature: float = None):
+    def __init__(self, name: str, model: str = None, temperature: float = None,
+                 max_tokens: int = None):
         """
         Initialize base agent
         
@@ -36,7 +37,7 @@ class BaseAgent(ABC):
                 model=self.model,
                 api_key=settings.nvidia_api_key,
                 temperature=self.temperature,
-                max_tokens=settings.llm_max_tokens,
+                max_tokens=max_tokens or settings.llm_max_tokens,
                 timeout=settings.llm_timeout
             )
             logger.info(f"Initialized {self.name} with model {self.model}")
@@ -59,7 +60,7 @@ class BaseAgent(ABC):
         """
         pass
     
-    def invoke(self, messages: List, system_prompt: str = None) -> str:
+    def invoke(self, messages: List, system_prompt: str = None, on_token=None) -> str:
         """
         Invoke LLM with messages
         
@@ -82,8 +83,17 @@ class BaseAgent(ABC):
                 else:
                     message_list.append(msg)
             
-            response = self.llm.invoke(message_list)
-            return response.content
+            if on_token is None:
+                return self.llm.invoke(message_list).content
+
+            # Streaming: forward text chunks as they arrive, return the full text
+            parts: List[str] = []
+            for chunk in self.llm.stream(message_list):
+                text = chunk.content if isinstance(chunk.content, str) else ""
+                if text:
+                    parts.append(text)
+                    on_token(text)
+            return "".join(parts)
         except Exception as e:
             logger.error(f"Error invoking LLM: {e}")
             raise

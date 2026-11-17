@@ -6,14 +6,16 @@ take many seconds, so FastAPI runs them in its thread pool instead of blocking
 the event loop.
 """
 
+import json
 import logging
 from datetime import datetime
 from typing import Any, Dict
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
-from src.graph import run_workflow
+from src.graph import run_workflow, stream_workflow
 from src.graph.nodes import router_agent
 from src.retrieval import vector_store_manager
 from api.schemas import (
@@ -68,6 +70,41 @@ def query_endpoint(request: QueryRequest):
         return _build_response(request.query, result, request.include_metadata)
     except Exception as e:
         raise _internal_error("query failed", e)
+
+
+def _sse(event: Dict[str, Any]) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+
+
+@router.post("/query/stream")
+def query_stream_endpoint(request: QueryRequest):
+    """
+    Same as /query but streamed as Server-Sent Events:
+    `stage` / `route` / `token` events while running, then one `final` event
+    carrying the full QueryResponse (sources, themes...), or an `error` event.
+    """
+    def events():
+        try:
+            for event in stream_workflow(request.query):
+                if event.get("type") == "final":
+                    resp = _build_response(request.query, event["state"], request.include_metadata)
+                    yield _sse({"type": "final", "response": resp.model_dump()})
+                elif event.get("type") == "error":
+                    trace_id = uuid4().hex[:8]
+                    logger.error(f"[{trace_id}] stream failed: {event.get('message')}")
+                    yield _sse({"type": "error", "message": f"Internal server error (trace id: {trace_id})"})
+                else:
+                    yield _sse(event)
+        except Exception as e:
+            trace_id = uuid4().hex[:8]
+            logger.error(f"[{trace_id}] stream failed: {e}", exc_info=True)
+            yield _sse({"type": "error", "message": f"Internal server error (trace id: {trace_id})"})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/query/batch", response_model=BatchQueryResponse)

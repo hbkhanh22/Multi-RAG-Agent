@@ -35,9 +35,16 @@ class Settings(BaseSettings):
     google_api_key: Optional[str] = None  # unused (kept so old .env files still load)
 
     # ============= LLM =============
-    default_llm_model: str = "openai/gpt-oss-20b"
-    fast_llm_model: str = "openai/gpt-oss-20b"
-    powerful_llm_model: str = "nvidia/nemotron-3-super-120b-a12b"
+    default_llm_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
+    fast_llm_model: str = "nvidia/nemotron-3.5-bolt-e4b"
+    powerful_llm_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
+    # Router only emits a tiny JSON: use a small non-reasoning model + short output.
+    # Empty string => fall back to default_llm_model.
+    router_llm_model: str = "nvidia/nemotron-3.5-bolt-e4b"
+    router_max_tokens: int = 200
+    # Small talk (direct chat): fast non-reasoning model, streamed.
+    chat_llm_model: str = "nvidia/nemotron-3.5-bolt-e4b"
+    chat_max_tokens: int = 800
     llm_temperature: float = 0.0
     llm_max_tokens: int = 2000
     llm_timeout: int = 300

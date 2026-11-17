@@ -17,7 +17,7 @@ from .edges import (
     route_to_end,
     should_continue
 )
-from .workflow import build_agent_graph, create_initial_state, run_workflow, app
+from .workflow import build_agent_graph, create_initial_state, run_workflow, stream_workflow, app
 
 __all__ = [
     "AgentState",
@@ -38,5 +38,6 @@ __all__ = [
     "build_agent_graph",
     "create_initial_state",
     "run_workflow",
+    "stream_workflow",
     "app",
 ]

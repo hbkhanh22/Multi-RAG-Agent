@@ -188,8 +188,10 @@ Mọi cấu hình được tập trung tại file [config/settings.py](file:///e
 | Biến môi trường / Cấu hình | Giá trị mặc định | Mô tả |
 | :--- | :--- | :--- |
 | `NVIDIA_API_KEY` | `""` | Khóa API NVIDIA NIM (dùng cho ChatNVIDIA) |
-| `DEFAULT_LLM_MODEL` | `openai/gpt-oss-20b` | Mô hình LLM mặc định cho các Agent |
-| `POWERFUL_LLM_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | Mô hình mạnh (hiện chưa agent nào dùng) |
+| `DEFAULT_LLM_MODEL` | `nvidia/nemotron-3.5-lightning-30b-a3b` | LLM sinh câu trả lời RAG và tổng hợp |
+| `FAST_LLM_MODEL` | `nvidia/nemotron-3.5-bolt-e4b` | LLM nhỏ cho query expansion |
+| `ROUTER_LLM_MODEL` / `CHAT_LLM_MODEL` | `nvidia/nemotron-3.5-bolt-e4b` | Router (JSON ngắn) và hội thoại thường; model không suy luận nên phản hồi ~1-2s. `gpt-oss-20b` là model suy luận, mất 50-300s cho cùng việc |
+| `POWERFUL_LLM_MODEL` | `nvidia/nemotron-3.5-lightning-30b-a3b` | Mô hình mạnh (hiện chưa agent nào dùng) |
 | `EMBEDDING_MODEL` | `BAAI/bge-m3` | Mô hình nhúng đa ngôn ngữ cục bộ (1024 dimensions) |
 | `CHUNK_SIZE` | `512` | Số ký tự tối đa trên mỗi chunk tài liệu |
 | `CHUNK_OVERLAP` | `64` | Số ký tự gối đầu giữa 2 chunk liên tiếp |
@@ -273,6 +275,9 @@ Truy cập giao diện chat tại: http://localhost:5173
 ---
 
 ## 8. API Endpoints & Cách Sử Dụng
+
+### 0. Streaming (`POST /api/query/stream`) — frontend dùng endpoint này
+Trả về Server-Sent Events: `stage` (routing/retrieving/synthesizing), `route`, nhiều `token` (chữ hiện dần), rồi một `final` chứa `QueryResponse` đầy đủ (nguồn, themes...) hoặc `error`. Câu chào/cảm ơn/"bạn là ai" đi đường tắt regex, không tốn lần gọi LLM phân loại. Route một agent stream trực tiếp; route nhiều agent chỉ stream sau bước tổng hợp (không stream được vì đầu ra là JSON).
 
 ### 1. Truy vấn câu hỏi (`POST /api/query`)
 Xử lý câu hỏi đầy đủ qua LangGraph workflow:

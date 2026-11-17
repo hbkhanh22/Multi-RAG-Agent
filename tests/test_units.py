@@ -135,3 +135,16 @@ def test_manifest_key_migration(modules, tmp_path, monkeypatch):
     manifest.write_text(json.dumps({legacy_key: {"domain": "tech"}}), encoding="utf-8")
     monkeypatch.setattr(ai, "MANIFEST_FILE", manifest)
     assert list(ai._load_manifest()) == ["data/raw/tech/x.pdf"]
+
+
+@pytest.mark.parametrize("q", ["Xin chào", "xin chào bạn!", "Hello", "hi", "Cảm ơn nhiều nhé", "Bạn là ai?", "Chào buổi sáng", "Tạm biệt"])
+def test_fast_route_smalltalk(modules, q):
+    from src.agents.router_agent import fast_route
+    r = fast_route(q)
+    assert r and r["route"] == "direct_chat" and r["agents"] == ["direct_chat"]
+
+
+@pytest.mark.parametrize("q", ["MCP là gì?", "Xin chào, giải thích MCP giúp tôi", "Giá vàng hôm nay", "hi there, what is RAG?"])
+def test_fast_route_ignores_real_questions(modules, q):
+    from src.agents.router_agent import fast_route
+    assert fast_route(q) is None

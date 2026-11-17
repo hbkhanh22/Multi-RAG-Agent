@@ -31,7 +31,14 @@ class FakeLLM:
         self.fail_generation = False
         self.calls = []
 
-    def __call__(self, agent, messages, system_prompt=None):
+    def __call__(self, agent, messages, system_prompt=None, on_token=None):
+        out = self._answer(agent, messages, system_prompt)
+        if on_token:  # emulate streaming: a few chunks
+            for i in range(0, len(out), 8):
+                on_token(out[i:i + 8])
+        return out
+
+    def _answer(self, agent, messages, system_prompt):
         sp = system_prompt or ""
         self.calls.append(sp[:40])
         if "query router" in sp:
@@ -40,6 +47,8 @@ class FakeLLM:
             return json.dumps({"answer": "MERGED [Source 1] [Source 5]", "themes": ["a", "b"]})
         if self.fail_generation:
             raise RuntimeError("LLM down")
+        if "Multi-RAG Agent" in sp and "chào hỏi" in sp:
+            return "Chào bạn! Tôi có thể giúp gì?"
         if "Web Search Agent" in sp:
             return "Web says so [Source 1] [Source 2]"
         return "Docs say so [Source 1]"
@@ -59,7 +68,7 @@ def modules():
 def fake_llm(modules, monkeypatch):
     llm = FakeLLM()
     monkeypatch.setattr(modules["BaseAgent"], "invoke",
-                        lambda self, messages, system_prompt=None: llm(self, messages, system_prompt))
+                        lambda self, messages, system_prompt=None, on_token=None: llm(self, messages, system_prompt, on_token))
     monkeypatch.setattr(modules["expander"], "_invoke_llm", lambda messages: "")  # no expansion calls
     return llm
 

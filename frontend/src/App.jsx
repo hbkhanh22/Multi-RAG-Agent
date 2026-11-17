@@ -62,6 +62,12 @@ const SAMPLE_QUESTIONS = [
   },
 ];
 
+const STAGE_LABELS = {
+  routing: "Đang phân loại câu hỏi...",
+  retrieving: "Đang tra cứu tài liệu & tìm kiếm...",
+  synthesizing: "Đang tổng hợp câu trả lời...",
+};
+
 const STATUS_LABELS = {
   checking: "Đang kiểm tra",
   online: "Sẵn sàng",
@@ -87,6 +93,8 @@ export default function App() {
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState("");
+  const [stage, setStage] = useState("routing");
+  const [streamingId, setStreamingId] = useState(null);
   const [includeMetadata, setIncludeMetadata] = useState(true);
   const [debug, setDebug] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem("rag_theme") || "dark");
@@ -170,8 +178,15 @@ export default function App() {
     abortRef.current = controller;
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
+    const assistantId = uid();
+    let streamedText = "";
+    let started = false;
+    const patchAssistant = (patch) =>
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, ...patch } : m)));
+
     try {
-      const response = await fetch(`${API_BASE_URL}/api/chat`, {
+      setStage("routing");
+      const response = await fetch(`${API_BASE_URL}/api/query/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
@@ -182,27 +197,65 @@ export default function App() {
         }),
       });
 
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
+      if (!response.ok || !response.body) {
+        const payload = await response.json().catch(() => ({}));
         throw new Error(payload.detail || payload.message || "Không thể kết nối đến hệ thống Multi-RAG.");
       }
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: uid(),
-          role: "assistant",
-          content: payload.final_answer || "Agent không trả về nội dung.",
-          meta: {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finished = false;
+
+      const handleEvent = (event) => {
+        if (event.type === "stage") {
+          setStage(event.stage);
+        } else if (event.type === "token") {
+          streamedText += event.text;
+          if (!started) {
+            started = true;
+            setStreamingId(assistantId);
+            setMessages((prev) => [
+              ...prev,
+              { id: assistantId, role: "assistant", content: streamedText, streaming: true },
+            ]);
+          } else {
+            patchAssistant({ content: streamedText });
+          }
+        } else if (event.type === "final") {
+          finished = true;
+          const payload = event.response;
+          const meta = {
             route: payload.route,
             confidence: payload.confidence,
             success: payload.success,
             sources: payload.sources || [],
             keyThemes: payload.key_themes || [],
             processingTime: payload.metadata?.processing_time,
-          },
-        },
-      ]);
+          };
+          const content = payload.final_answer || streamedText || "Agent không trả về nội dung.";
+          if (started) {
+            patchAssistant({ content, meta, streaming: false });
+          } else {
+            setMessages((prev) => [...prev, { id: assistantId, role: "assistant", content, meta }]);
+          }
+        } else if (event.type === "error") {
+          throw new Error(event.message || "Đã xảy ra lỗi khi xử lý câu hỏi.");
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() ?? "";
+        for (const chunk of chunks) {
+          const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+          if (line) handleEvent(JSON.parse(line.slice(6)));
+        }
+      }
+      if (!finished) throw new Error("Kết nối bị ngắt trước khi nhận đủ câu trả lời.");
     } catch (err) {
       const msg =
         err?.name === "AbortError"
@@ -212,7 +265,7 @@ export default function App() {
             : "Đã xảy ra lỗi không xác định.";
       setError(msg);
       setMessages((prev) => [
-        ...prev,
+        ...prev.filter((m) => m.id !== assistantId),
         {
           id: uid(),
           role: "assistant",
@@ -224,6 +277,7 @@ export default function App() {
       clearTimeout(timeout);
       abortRef.current = null;
       setIsSending(false);
+      setStreamingId(null);
       requestAnimationFrame(() => inputRef.current?.focus());
     }
   }
@@ -456,7 +510,7 @@ export default function App() {
           ))}
 
           {/* THINKING STATE */}
-          {isSending && (
+          {isSending && !streamingId && (
             <article className="message assistant thinkingMessage">
               <div className="avatar" aria-hidden="true">
                 <Bot size={18} />
@@ -464,7 +518,7 @@ export default function App() {
               <div className="bubble thinkingBubble">
                 <div className="thinkingHeader">
                   <Loader2 size={16} className="spinIcon" />
-                  <span>Multi-RAG Agent đang phân tích & truy vấn...</span>
+                  <span>{STAGE_LABELS[stage] || "Multi-RAG Agent đang xử lý..."}</span>
                 </div>
                 <div className="thinkingBar">
                   <div className="thinkingShimmer" />
