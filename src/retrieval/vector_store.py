@@ -35,6 +35,11 @@ def _doc_key(doc: Document) -> Tuple:
     )
 
 
+def embedding_slug() -> str:
+    """Filesystem-safe tag of the configured embedding model."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", settings.embedding_model.split("/")[-1]).lower()
+
+
 class VectorStoreManager:
     """Manages vector stores for different domains"""
 
@@ -42,7 +47,11 @@ class VectorStoreManager:
 
     def __init__(self):
         try:
-            self.embeddings = HuggingFaceEmbeddings(model_name=settings.embedding_model)
+            self.embeddings = HuggingFaceEmbeddings(
+                model_name=settings.embedding_model_path,
+                model_kwargs={"device": settings.embedding_device},
+                encode_kwargs={"normalize_embeddings": True, "batch_size": settings.embedding_batch_size},
+            )
         except Exception as e:
             logger.error(f"Failed to initialize embeddings: {e}")
             raise
@@ -55,11 +64,14 @@ class VectorStoreManager:
     # ------------------------------------------------------------------ setup
 
     def _store_path(self, domain: str) -> Path:
-        return {
+        base = {
             "finance": settings.finance_store_path,
             "tech": settings.tech_store_path,
             "general": settings.general_store_path,
         }[domain]
+        # One sub-directory per embedding model: switching models never mixes
+        # incompatible vectors and triggers a clean re-ingestion.
+        return Path(base) / embedding_slug()
 
     def _make_store(self, domain: str) -> Chroma:
         path = self._store_path(domain)

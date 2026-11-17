@@ -19,10 +19,13 @@ from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from config.settings import settings, BASE_DIR
 from src.ingestion.chunker import DocumentChunker
 from src.retrieval import vector_store_manager
+from src.retrieval.vector_store import embedding_slug
 
 logger = logging.getLogger(__name__)
 
-MANIFEST_FILE = Path(settings.data_dir) / "vectorstores" / ".ingested_manifest.json"
+MANIFEST_FILE = (
+    Path(settings.data_dir) / "vectorstores" / f".ingested_manifest.{embedding_slug()}.json"
+)
 
 
 def _rel_key(path: Path) -> str:

@@ -41,7 +41,7 @@ Quy trình nạp tài liệu biến đổi dữ liệu thô (PDF, DOCX, TXT, Mar
    - `chunk_size = 512`: Độ dài tối ưu ngữ nghĩa cho các mô hình embedding dạng nhỏ/nhanh.
    - `chunk_overlap = 64` (hoặc `128`): Giữ tính liên tục của ngữ cảnh giữa các đoạn cắt liền kề.
    - `add_start_index = True`: Lưu vị trí index để phục vụ việc trích xuất toạ độ dữ liệu.
-4. **Vector Embedding:** Sử dụng mô hình `all-MiniLM-L6-v2` (dimension = 384) qua HuggingFace để mã hóa nội dung chunk thành vector không gian.
+4. **Vector Embedding:** Sử dụng mô hình `BAAI/bge-m3` (đa ngôn ngữ, dimension = 1024, vector chuẩn hóa) qua HuggingFace để mã hóa nội dung chunk thành vector không gian.
 5. **ChromaDB Multi-Collection:** Mỗi domain sở hữu một thư mục lưu trữ độc lập:
    - Finance: `data/vectorstores/finance_store` (collection: `finance_collection`)
    - Tech: `data/vectorstores/tech_store` (collection: `tech_collection`)
@@ -89,13 +89,13 @@ Quy trình RAG bao gồm 4 giai đoạn nối tiếp nhau được tinh chỉnh 
    - **Deduplication:** Khử trùng các chunk trùng lặp theo (nguồn, trang, nội dung).
    - **Relevance Threshold & Fallback:** Chunk chỉ được coi là liên quan nếu điểm rerank ≥ `RELEVANCE_THRESHOLD`. Nếu domain chính không có chunk liên quan, hệ thống thử các domain nội bộ khác; nếu vẫn không có, chuyển sang tìm kiếm web.
 3. **Cross-Encoder Re-ranking:**
-   - Sử dụng mô hình `cross-encoder/ms-marco-MiniLM-L-12-v2`.
+   - Sử dụng mô hình `BAAI/bge-reranker-v2-m3` (đa ngôn ngữ, điểm sigmoid 0..1).
    - Tính toán điểm tương đồng ngữ nghĩa sâu (deep cross-attention) giữa câu hỏi và từng chunk.
    - Lọc từ **20 chunks thô** xuống còn **Top 4 chunks tinh hoa nhất**, loại bỏ hoàn toàn các thông tin gây nhiễu.
 4. **LLM Generation:**
    - Đưa câu hỏi kèm tối đa 4 chunks ngữ cảnh tinh chọn vào LLM để sinh câu trả lời kèm thẻ trích dẫn `[Source N]`.
 
-> **Hạn chế đã biết:** embedding (`all-MiniLM-L6-v2`) và reranker (`ms-marco`) đều là mô hình tiếng Anh. Câu hỏi thuần tiếng Việt về tài liệu tiếng Anh thường có điểm rerank thấp và sẽ rơi xuống web fallback. Câu hỏi tiếng Anh hoặc có thuật ngữ gốc (ví dụ "MCP") hoạt động tốt. Cần mô hình đa ngôn ngữ để khắc phục.
+> **Đa ngôn ngữ:** embedding và reranker đều hỗ trợ tiếng Việt/Anh, nên câu hỏi tiếng Việt truy xuất được tài liệu tiếng Anh (điểm liên quan ≥ 0.15, câu hỏi không liên quan ≤ 0.01; ngưỡng mặc định 0.05). Mỗi embedding model có thư mục vectorstore và manifest riêng (`data/vectorstores/<domain>_store/<model>/`), đổi model sẽ tự nạp lại. Đặt model đã tải sẵn vào `data/models/<tên model>/` để chạy offline. Lần nạp đầu với CPU mất ~14 phút cho 630 chunk.
 
 ---
 
@@ -190,15 +190,15 @@ Mọi cấu hình được tập trung tại file [config/settings.py](file:///e
 | `NVIDIA_API_KEY` | `""` | Khóa API NVIDIA NIM (dùng cho ChatNVIDIA) |
 | `DEFAULT_LLM_MODEL` | `openai/gpt-oss-20b` | Mô hình LLM mặc định cho các Agent |
 | `POWERFUL_LLM_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | Mô hình mạnh (hiện chưa agent nào dùng) |
-| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Mô hình nhúng văn bản cục bộ (384 dimensions) |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Mô hình nhúng đa ngôn ngữ cục bộ (1024 dimensions) |
 | `CHUNK_SIZE` | `512` | Số ký tự tối đa trên mỗi chunk tài liệu |
 | `CHUNK_OVERLAP` | `64` | Số ký tự gối đầu giữa 2 chunk liên tiếp |
 | `TOP_K_RETRIEVAL` | `10` | Số lượng tài liệu thô truy xuất từ vector store |
 | `TOP_K_RERANK` | `4` | Số tài liệu tinh chọn sau khi chạy Cross-Encoder |
-| `RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-12-v2` | Mô hình Cross-Encoder để tái chấm điểm |
+| `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Mô hình Cross-Encoder để tái chấm điểm |
 | `USE_RERANKER` | `True` | Bật/tắt tầng Reranking trong pipeline |
 | `VECTOR_WEIGHT` / `BM25_WEIGHT` | `0.6` / `0.4` | Trọng số hợp nhất vector và BM25 |
-| `RELEVANCE_THRESHOLD` | `-4.0` | Điểm rerank tối thiểu để một chunk được coi là liên quan |
+| `RELEVANCE_THRESHOLD` | `0.05` | Điểm rerank (0..1) tối thiểu để một chunk được coi là liên quan |
 | `CORS_ORIGINS` | `localhost:5173,...` | Danh sách origin được phép (phân tách bằng dấu phẩy) |
 
 ---

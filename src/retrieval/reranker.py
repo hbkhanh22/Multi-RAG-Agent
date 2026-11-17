@@ -6,12 +6,17 @@ Uses CrossEncoder models for better relevance scoring
 from typing import List, Optional, Tuple
 import logging
 
+import os
+
+import torch
 from sentence_transformers import CrossEncoder
 from langchain_core.documents import Document
 
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+torch.set_num_threads(settings.torch_threads or os.cpu_count() or 1)
 
 
 class Reranker:
@@ -25,7 +30,7 @@ class Reranker:
             model_name: Model name from HuggingFace (defaults to settings.reranker_model)
         """
         if model_name is None:
-            model_name = settings.reranker_model
+            model_name = settings.reranker_model_path
 
         self.model_name = model_name
         self.model: Optional[CrossEncoder] = None
@@ -38,7 +43,11 @@ class Reranker:
 
         try:
             logger.info(f"Loading reranker model: {self.model_name}")
-            self.model = CrossEncoder(self.model_name)
+            self.model = CrossEncoder(
+                self.model_name,
+                max_length=settings.reranker_max_length,
+                device=settings.embedding_device,
+            )
             logger.info("Reranker model loaded and ready.")
             return True
         except Exception as e:
@@ -74,11 +83,13 @@ class Reranker:
             
             # Get relevance scores
             logger.info(f"Reranking {len(documents)} documents for query")
-            scores = self.model.predict(pairs)
+            scores = self.model.predict(
+                pairs, batch_size=settings.reranker_batch_size, show_progress_bar=False
+            )
             
             # Sort by score descending
             doc_score_pairs = list(zip(documents, scores))
-            doc_score_pairs = sorted(doc_score_pairs, key=lambda x: x[1], reverse=True)
+            doc_score_pairs = sorted(((d, float(sc)) for d, sc in doc_score_pairs), key=lambda x: x[1], reverse=True)
             
             # Return top k
             top_k_results = doc_score_pairs[:k]
@@ -140,7 +151,9 @@ class Reranker:
         try:
             doc_texts = [doc.page_content for doc in documents]
             pairs = [[query, text] for text in doc_texts]
-            scores = self.model.predict(pairs)
+            scores = self.model.predict(
+                pairs, batch_size=settings.reranker_batch_size, show_progress_bar=False
+            )
             
             results = [
                 {

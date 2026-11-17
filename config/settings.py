@@ -43,8 +43,13 @@ class Settings(BaseSettings):
     llm_timeout: int = 300
 
     # ============= Embedding =============
-    embedding_model: str = "all-MiniLM-L6-v2"
-    embedding_dimension: int = 384
+    # Multilingual (vi/en/...). Old English-only model: "all-MiniLM-L6-v2" (384 dims).
+    embedding_model: str = "BAAI/bge-m3"
+    embedding_dimension: int = 1024
+    embedding_device: str = "cpu"
+    embedding_batch_size: int = 16
+    # CPU threads for torch (0 = all cores). torch defaulted to 1 thread here.
+    torch_threads: int = 0
 
     # ============= Chunking / Retrieval =============
     chunk_size: int = 512
@@ -57,10 +62,13 @@ class Settings(BaseSettings):
     bm25_weight: float = 0.4
 
     # Reranking
-    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"
+    # Multilingual cross-encoder. Scores are sigmoid-normalised to 0..1.
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_max_length: int = 512
+    reranker_batch_size: int = 16
     use_reranker: bool = True
     # Rerank score below this => chunk considered not relevant (fallback kicks in)
-    relevance_threshold: float = -4.0
+    relevance_threshold: float = 0.05
 
     # ============= Paths =============
     data_dir: Path = Path("data")
@@ -87,6 +95,20 @@ class Settings(BaseSettings):
     @classmethod
     def _anchor_to_project_root(cls, value: Path) -> Path:
         return value if value.is_absolute() else BASE_DIR / value
+
+    @staticmethod
+    def _local_or_hub(name: str) -> str:
+        """Use a pre-downloaded copy in data/models/<name> if present, else the hub id."""
+        local = BASE_DIR / "data" / "models" / name.split("/")[-1]
+        return str(local) if (local / "config.json").exists() else name
+
+    @property
+    def embedding_model_path(self) -> str:
+        return self._local_or_hub(self.embedding_model)
+
+    @property
+    def reranker_model_path(self) -> str:
+        return self._local_or_hub(self.reranker_model)
 
     @property
     def cors_origin_list(self) -> List[str]:
