@@ -16,6 +16,8 @@ from src.agents.base_agent import BaseAgent
 from src.agents import RouterAgent, RAGAgent, SupervisorAgent, SynthesizerAgent, WebAgent
 from src.graph.state import AgentState
 from src.utils import Timer
+from src.memory import condense_prompt, format_history, history_to_messages, needs_condense
+from src.agents.router_agent import fast_route
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -58,13 +60,39 @@ supervisor_agent = SupervisorAgent(agents={**rag_agents, "web": web_agent})
 chat_agent = ChatAgent()
 
 
+def _q(state: AgentState) -> str:
+    """The query to route/retrieve with: history-resolved when available."""
+    return state.get("standalone_query") or state["query"]
+
+
+def condense_node(state: AgentState) -> Dict[str, Any]:
+    """Rewrite a follow-up question into a standalone one (skipped when not needed)."""
+    query = state["query"]
+    history = state.get("history") or []
+    if not needs_condense(query, history) or fast_route(query):
+        return {"standalone_query": query}
+
+    emit({"type": "stage", "stage": "understanding"})
+    try:
+        with Timer("Condense"):
+            rewritten = chat_agent.invoke([condense_prompt(query, history)]).strip().strip('"')
+        # Guard against empty / runaway rewrites: fall back to the original
+        if not rewritten or len(rewritten) > 4 * max(len(query), 40):
+            rewritten = query
+    except Exception as e:
+        logger.warning(f"Condense failed, using original query: {e}")
+        rewritten = query
+    logger.info(f"Standalone query: {rewritten!r}")
+    return {"standalone_query": rewritten}
+
+
 def router_node(state: AgentState) -> Dict[str, Any]:
     """Route query to appropriate agents"""
     logger.info("=== ROUTER NODE ===")
     emit({"type": "stage", "stage": "routing"})
 
     with Timer("Router"):
-        result = router_agent.run({"query": state["query"]})
+        result = router_agent.run({"query": _q(state)})
 
     route = result.get("route", "general")
     agents = result.get("agents", ["general"])
@@ -83,7 +111,8 @@ def _run_agent(name: str, agent, state: AgentState) -> Dict[str, Any]:
     with Timer(f"{name} agent"):
         # Single-agent route: the answer is passed through unchanged, so stream it live
         result = agent.run({
-            "query": state["query"],
+            "query": _q(state),
+            "history": format_history(state.get("history") or []),
             "on_token": lambda t: emit({"type": "token", "text": t}),
         })
     logger.info(f"{name} result: success={result.get('success')}")
@@ -118,7 +147,7 @@ def supervisor_node(state: AgentState) -> Dict[str, Any]:
 
     with Timer("Supervisor"):
         result = supervisor_agent.run({
-            "query": state["query"],
+            "query": _q(state),
             "active_agents": state["active_agents"],
         })
 
@@ -142,7 +171,7 @@ def synthesizer_node(state: AgentState) -> Dict[str, Any]:
         emit({"type": "stage", "stage": "synthesizing"})
     with Timer("Synthesizer"):
         result = synthesizer_agent.run({
-            "query": state["query"],
+            "query": _q(state),
             "agent_responses": agent_responses,
         })
 
@@ -173,7 +202,7 @@ def direct_chat_node(state: AgentState) -> Dict[str, Any]:
     with Timer("Direct Chat"):
         try:
             response_text = chat_agent.invoke(
-                [state["query"]],
+                [*history_to_messages(state.get("history") or []), state["query"]],
                 system_prompt=system_prompt,
                 on_token=lambda t: emit({"type": "token", "text": t}),
             )

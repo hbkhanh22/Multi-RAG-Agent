@@ -66,7 +66,9 @@ class WebAgent(BaseAgent):
             formatted_context = self._format_search_results(search_results)
             
             # Step 3: Generate synthesized answer with citations
-            answer = self._generate_answer(query, formatted_context, input_data.get("on_token"))
+            answer = self._generate_answer(
+                query, formatted_context, input_data.get("on_token"), input_data.get("history", "")
+            )
             
             # Step 4: Format sources
             citations = [
@@ -114,7 +116,7 @@ class WebAgent(BaseAgent):
             context_parts.append(part)
         return "\n".join(context_parts)
     
-    def _generate_answer(self, query: str, context: str, on_token=None) -> str:
+    def _generate_answer(self, query: str, context: str, on_token=None, history: str = "") -> str:
         """Generate synthesis from web context using LLM"""
         system_prompt = (
             "Bạn là Web Search Agent chuyên nghiệp của hệ thống Multi-RAG Agent. "
@@ -127,7 +129,8 @@ class WebAgent(BaseAgent):
         )
         
         prompt = (
-            f"Câu hỏi của người dùng: {query}\n\n"
+            (f"Hội thoại trước đó (chỉ để hiểu ngữ cảnh, không trích dẫn):\n{history}\n\n" if history else "")
+            + f"Câu hỏi của người dùng: {query}\n\n"
             f"Kết quả tìm kiếm từ Internet:\n{context}\n\n"
             f"Hãy trả lời chi tiết và trích dẫn [Source N] cho từng thông tin."
         )

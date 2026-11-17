@@ -45,7 +45,9 @@ class RAGAgent(BaseAgent):
                 return {"success": False, "answer": "No query provided", "sources": [], "domain": self.domain}
 
             documents, retrieved_count, fallback = self._gather_context(query)
-            answer, citations = self._generate(query, documents, input_data.get("on_token"))
+            answer, citations = self._generate(
+                query, documents, input_data.get("on_token"), input_data.get("history", "")
+            )
 
             return {
                 "success": True,
@@ -114,17 +116,25 @@ class RAGAgent(BaseAgent):
                     query, domain=domain, expansion_types=["multi_query"]
                 )
 
+            per_query = [
+                vector_store_manager.hybrid_search(domain, q, k=settings.top_k_retrieval) for q in queries
+            ]
+
+            # Interleave the per-query rankings (best of each query first), dedupe, then cap:
+            # the reranker is the slowest step and costs time per candidate.
             docs: List[Document] = []
             seen = set()
-            for q in queries:
-                for doc in vector_store_manager.hybrid_search(domain, q, k=settings.top_k_retrieval):
-                    key = (doc.metadata.get("source"), doc.metadata.get("page"), doc.page_content)
-                    if key not in seen:
-                        seen.add(key)
-                        docs.append(doc)
+            for rank in range(max((len(r) for r in per_query), default=0)):
+                for results in per_query:
+                    if rank < len(results):
+                        doc = results[rank]
+                        key = (doc.metadata.get("source"), doc.metadata.get("page"), doc.page_content)
+                        if key not in seen:
+                            seen.add(key)
+                            docs.append(doc)
 
             logger.info(f"Retrieved {len(docs)} candidate documents from {domain}")
-            return docs[: settings.top_k_retrieval * 2]
+            return docs[: settings.rerank_max_candidates]
 
         except Exception as e:
             logger.error(f"Error during retrieval in {domain}: {e}", exc_info=True)
@@ -176,7 +186,7 @@ class RAGAgent(BaseAgent):
 
     # ----------------------------------------------------------- generation
 
-    def _generate(self, query: str, documents: List[Document], on_token=None) -> Tuple[str, List[Dict]]:
+    def _generate(self, query: str, documents: List[Document], on_token=None, history: str = "") -> Tuple[str, List[Dict]]:
         """Generate an answer from documents"""
         try:
             system_prompt = f"""You are a helpful assistant specializing in the {self.domain} domain.
@@ -199,6 +209,10 @@ Please provide a comprehensive answer with citations:"""
                     "Answer from your general knowledge and note this clearly."
                 )
 
+            if history:
+                prompt = (
+                    f"Earlier conversation (for context only; do not cite it):\n{history}\n\n" + prompt
+                )
             answer = self.invoke([prompt], system_prompt=system_prompt, on_token=on_token)
             return answer, self._extract_citations(documents, answer)
 

@@ -17,11 +17,13 @@ import {
   Globe,
   Layers,
   Loader2,
+  MessageSquare,
   Moon,
   Plus,
   Send,
   Sparkles,
   Sun,
+  Trash2,
   TrendingUp,
   User,
   Zap,
@@ -63,6 +65,7 @@ const SAMPLE_QUESTIONS = [
 ];
 
 const STAGE_LABELS = {
+  understanding: "Đang hiểu ngữ cảnh cuộc trò chuyện...",
   routing: "Đang phân loại câu hỏi...",
   retrieving: "Đang tra cứu tài liệu & tìm kiếm...",
   synthesizing: "Đang tổng hợp câu trả lời...",
@@ -101,6 +104,14 @@ export default function App() {
   const [copiedId, setCopiedId] = useState(null);
   const [apiStatus, setApiStatus] = useState("checking"); // checking | online | degraded | offline
   const abortRef = useRef(null);
+  const [conversationId, setConversationId] = useState(() => {
+    try {
+      return localStorage.getItem("rag_conversation_id") || null;
+    } catch {
+      return null;
+    }
+  });
+  const [conversations, setConversations] = useState([]);
 
   const inputRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -113,6 +124,94 @@ export default function App() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isSending]);
+
+  function persistConversationId(id) {
+    setConversationId(id);
+    try {
+      if (id) localStorage.setItem("rag_conversation_id", id);
+      else localStorage.removeItem("rag_conversation_id");
+    } catch {
+      // ignore (private mode)
+    }
+  }
+
+  async function refreshConversations() {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/conversations`);
+      if (res.ok) setConversations((await res.json()).conversations || []);
+    } catch {
+      // sidebar history is optional
+    }
+  }
+
+  function toUiMessages(stored) {
+    return stored.map((m) => ({
+      id: uid(),
+      role: m.role,
+      content: m.content,
+      meta:
+        m.role === "assistant" && m.meta
+          ? {
+              route: m.meta.route,
+              confidence: m.meta.confidence,
+              success: m.meta.success,
+              sources: m.meta.sources || [],
+              keyThemes: m.meta.key_themes || [],
+              processingTime: m.meta.processing_time,
+            }
+          : undefined,
+    }));
+  }
+
+  async function openConversation(id) {
+    if (isSending || id === conversationId) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/conversations/${id}`);
+      if (!res.ok) throw new Error("not found");
+      const data = await res.json();
+      setMessages([INITIAL_MESSAGES[0], ...toUiMessages(data.messages || [])]);
+      persistConversationId(id);
+      setError("");
+    } catch {
+      persistConversationId(null);
+      setMessages(INITIAL_MESSAGES);
+      refreshConversations();
+    }
+  }
+
+  async function deleteConversation(id, e) {
+    e?.stopPropagation();
+    if (isSending) return;
+    try {
+      await fetch(`${API_BASE_URL}/api/conversations/${id}`, { method: "DELETE" });
+    } catch {
+      // ignore
+    }
+    if (id === conversationId) {
+      persistConversationId(null);
+      setMessages(INITIAL_MESSAGES);
+    }
+    refreshConversations();
+  }
+
+  // Restore the last conversation + sidebar history on first load
+  useEffect(() => {
+    refreshConversations();
+    if (conversationId) {
+      (async () => {
+        try {
+          const res = await fetch(`${API_BASE_URL}/api/conversations/${conversationId}`);
+          if (res.status === 404) return persistConversationId(null); // deleted elsewhere
+          if (!res.ok) return;
+          const data = await res.json();
+          setMessages([INITIAL_MESSAGES[0], ...toUiMessages(data.messages || [])]);
+        } catch {
+          // backend offline: keep the id, start with the welcome message
+        }
+      })();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Real backend health instead of a hard-coded "online" label
   useEffect(() => {
@@ -192,6 +291,7 @@ export default function App() {
         signal: controller.signal,
         body: JSON.stringify({
           query,
+          conversation_id: conversationId,
           include_metadata: includeMetadata,
           debug,
         }),
@@ -225,6 +325,10 @@ export default function App() {
         } else if (event.type === "final") {
           finished = true;
           const payload = event.response;
+          if (payload.conversation_id) {
+            persistConversationId(payload.conversation_id);
+            refreshConversations();
+          }
           const meta = {
             route: payload.route,
             confidence: payload.confidence,
@@ -289,6 +393,7 @@ export default function App() {
 
   function handleNewChat() {
     abortRef.current?.abort();
+    persistConversationId(null);
     setMessages(INITIAL_MESSAGES);
     setError("");
     setInput("");
@@ -315,6 +420,41 @@ export default function App() {
           <Plus size={18} />
           <span>Đoạn chat mới</span>
         </button>
+
+        {/* CONVERSATION HISTORY */}
+        {conversations.length > 0 && (
+          <section className="historyCard" aria-label="Lịch sử hội thoại">
+            <div className="sectionLabel">
+              <MessageSquare size={14} />
+              <span>Lịch sử</span>
+            </div>
+            <ul className="historyList">
+              {conversations.map((c) => (
+                <li key={c.id}>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    className={`historyItem ${c.id === conversationId ? "active" : ""}`}
+                    onClick={() => openConversation(c.id)}
+                    onKeyDown={(e) => e.key === "Enter" && openConversation(c.id)}
+                    title={c.title}
+                  >
+                    <span className="historyTitle">{c.title || "Cuộc trò chuyện"}</span>
+                    <button
+                      type="button"
+                      className="historyDelete"
+                      onClick={(e) => deleteConversation(c.id, e)}
+                      title="Xóa cuộc trò chuyện"
+                      aria-label="Xóa cuộc trò chuyện"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         {/* DOMAINS INFO */}
         <section className="domainsCard" aria-label="Available Agents">

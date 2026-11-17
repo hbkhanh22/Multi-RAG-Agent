@@ -18,6 +18,8 @@ class AgentState(TypedDict):
     # ========== Conversation ==========
     messages: Annotated[List[BaseMessage], operator.add]
     query: str
+    history: List[Dict[str, str]]  # earlier turns [{role, content}], oldest first
+    standalone_query: str  # query rewritten to need no history (routing/retrieval use it)
     
     # ========== Routing ==========
     route: str  # "finance" | "tech" | "general" | "multi"

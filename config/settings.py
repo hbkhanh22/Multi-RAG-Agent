@@ -18,7 +18,7 @@ _PATH_FIELDS = (
     "data_dir",
     "finance_data_path", "tech_data_path", "general_data_path",
     "finance_store_path", "tech_store_path", "general_store_path",
-    "log_dir",
+    "log_dir", "memory_db_path",
 )
 
 
@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     powerful_llm_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
     # Router only emits a tiny JSON: use a small non-reasoning model + short output.
     # Empty string => fall back to default_llm_model.
+    # Reasoning-capable models (nemotron 3.5) spend the token budget "thinking" and can return
+    # EMPTY answers; keep thinking off for latency and reliability.
+    llm_enable_thinking: bool = False
     router_llm_model: str = "nvidia/nemotron-3.5-bolt-e4b"
     router_max_tokens: int = 200
     # Small talk (direct chat): fast non-reasoning model, streamed.
@@ -63,6 +66,8 @@ class Settings(BaseSettings):
     chunk_overlap: int = 64
     top_k_retrieval: int = 10
     top_k_rerank: int = 4
+    # Cross-encoder cost grows linearly with candidates (CPU: ~0.7s each) => cap them.
+    rerank_max_candidates: int = 10
 
     # Hybrid retrieval fusion weights (vector vs BM25)
     vector_weight: float = 0.6
@@ -86,6 +91,11 @@ class Settings(BaseSettings):
     tech_store_path: Path = Path("data/vectorstores/tech_store")
     general_store_path: Path = Path("data/vectorstores/general_store")
     log_dir: Path = Path("logs")
+
+    # ============= Conversation memory =============
+    memory_db_path: Path = Path("data/memory.db")
+    memory_max_turns: int = 6        # most recent user+assistant pairs sent to the model
+    memory_max_chars: int = 4000     # character budget for that history
 
     # ============= Documents =============
     supported_file_types: List[str] = [".pdf", ".txt", ".md", ".docx"]

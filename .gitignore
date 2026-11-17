@@ -19,3 +19,4 @@ data/generated/
 data/processed/
 notebooks/data/vectorstores/
 data/models/
+data/memory.db*

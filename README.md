@@ -276,6 +276,14 @@ Truy cập giao diện chat tại: http://localhost:5173
 
 ## 8. API Endpoints & Cách Sử Dụng
 
+### Conversation memory (bộ nhớ hội thoại)
+- Hội thoại lưu ở SQLite `data/memory.db` (bảng `conversations`, `messages`). Gửi `conversation_id` trong `/api/query` hoặc `/api/query/stream` để tiếp tục; bỏ trống thì server tạo mới và trả `conversation_id` trong kết quả (`final`).
+- Câu hỏi nối tiếp ("giải thích kỹ hơn về nó") được node `condense` viết lại thành câu độc lập bằng model nhỏ trước khi route/truy xuất; chỉ chạy khi có lịch sử và câu hỏi trông như câu nối tiếp (ngắn hoặc có đại từ), câu chào bỏ qua.
+- Prompt sinh câu trả lời nhận tối đa `MEMORY_MAX_TURNS` (6) lượt gần nhất trong ngân sách `MEMORY_MAX_CHARS` (4000); thẻ `[Source N]` cũ bị loại khỏi lịch sử để không lẫn với đánh số nguồn của lượt mới.
+- Chỉ lưu câu trả lời thành công. Endpoint: `GET /api/conversations`, `GET /api/conversations/{id}`, `DELETE /api/conversations/{id}`. Frontend lưu id ở localStorage, khôi phục khi tải lại trang và có danh sách lịch sử ở sidebar.
+- Chưa có xác thực: ai biết `conversation_id` (UUID ngẫu nhiên) đều đọc được hội thoại đó.
+- LLM suy luận (nemotron 3.5) mặc định tắt chế độ nghĩ (`LLM_ENABLE_THINKING=false`); bật lên có thể làm câu trả lời rỗng vì hết ngân sách token.
+
 ### 0. Streaming (`POST /api/query/stream`) — frontend dùng endpoint này
 Trả về Server-Sent Events: `stage` (routing/retrieving/synthesizing), `route`, nhiều `token` (chữ hiện dần), rồi một `final` chứa `QueryResponse` đầy đủ (nguồn, themes...) hoặc `error`. Câu chào/cảm ơn/"bạn là ai" đi đường tắt regex, không tốn lần gọi LLM phân loại. Route một agent stream trực tiếp; route nhiều agent chỉ stream sau bước tổng hợp (không stream được vì đầu ra là JSON).
 

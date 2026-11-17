@@ -82,3 +82,16 @@ def fake_web(modules, monkeypatch):
 def tech_ready(modules):
     if modules["vsm"].get_store_stats("tech").get("document_count", 0) == 0:
         pytest.skip("tech vector store is empty (run the app once to ingest data/raw/tech)")
+
+
+@pytest.fixture(autouse=True)
+def isolated_conversation_store(tmp_path, monkeypatch):
+    """Never write test conversations into the real data/memory.db."""
+    from src.memory.store import ConversationStore
+    store = ConversationStore(tmp_path / "memory.db")
+    try:
+        import api.routes as routes
+        monkeypatch.setattr(routes, "conversation_store", store)
+    except ImportError:
+        pass
+    return store

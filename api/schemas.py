@@ -11,6 +11,7 @@ class QueryRequest(BaseModel):
     """Query request"""
     query: str = Field(..., min_length=1, max_length=2000)
     domain: Optional[str] = Field(None, description="Optional domain filter")
+    conversation_id: Optional[str] = Field(None, max_length=64, description="Continue this conversation; omitted => new one")
     include_metadata: bool = Field(default=False)
     debug: bool = Field(default=False)
 
@@ -49,6 +50,7 @@ class AgentResponseModel(BaseModel):
 
 class QueryResponse(BaseModel):
     """Query response"""
+    conversation_id: Optional[str] = None
     query: str
     success: bool
     final_answer: str

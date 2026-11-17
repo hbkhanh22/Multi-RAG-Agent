@@ -4,13 +4,14 @@ Workflow - LangGraph workflow builder for multi-RAG agent system
 
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage
 
 from .state import AgentState
 from .nodes import (
+    condense_node,
     router_node,
     finance_rag_node,
     tech_rag_node,
@@ -29,6 +30,7 @@ def build_agent_graph():
     """Build and compile the LangGraph workflow for the multi-RAG agent system"""
     graph = StateGraph(AgentState)
 
+    graph.add_node("condense", condense_node)
     graph.add_node("router", router_node)
     graph.add_node("finance_agent", finance_rag_node)
     graph.add_node("tech_agent", tech_rag_node)
@@ -38,7 +40,8 @@ def build_agent_graph():
     graph.add_node("synthesizer", synthesizer_node)
     graph.add_node("direct_chat_agent", direct_chat_node)
 
-    graph.set_entry_point("router")
+    graph.set_entry_point("condense")
+    graph.add_edge("condense", "router")
 
     graph.add_conditional_edges(
         "router",
@@ -62,10 +65,12 @@ def build_agent_graph():
     return graph.compile()
 
 
-def create_initial_state(query: str) -> Dict[str, Any]:
+def create_initial_state(query: str, history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
     """Create initial state for graph execution"""
     return {
         "query": query,
+        "history": history or [],
+        "standalone_query": "",
         "messages": [HumanMessage(content=query)],
         "route": "general",
         "active_agents": ["general"],
@@ -95,7 +100,7 @@ except Exception as e:  # pragma: no cover
     app = None
 
 
-def stream_workflow(query: str):
+def stream_workflow(query: str, history: Optional[List[Dict[str, str]]] = None):
     """
     Run the workflow and yield events as it progresses:
       {"type": "stage"|"route"|"token", ...}  while running
@@ -105,7 +110,7 @@ def stream_workflow(query: str):
     try:
         if app is None:
             app = build_agent_graph()
-        initial_state = create_initial_state(query)
+        initial_state = create_initial_state(query, history)
         start = time.time()
         initial_state["start_time"] = start
 
@@ -125,7 +130,7 @@ def stream_workflow(query: str):
         yield {"type": "error", "message": str(e)}
 
 
-def run_workflow(query: str, debug: bool = False) -> Dict[str, Any]:
+def run_workflow(query: str, debug: bool = False, history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
     """
     Run the multi-RAG agent workflow.
 
@@ -137,7 +142,7 @@ def run_workflow(query: str, debug: bool = False) -> Dict[str, Any]:
         if app is None:
             app = build_agent_graph()
 
-        initial_state = create_initial_state(query)
+        initial_state = create_initial_state(query, history)
         start_time = time.time()
         initial_state["start_time"] = start_time
 

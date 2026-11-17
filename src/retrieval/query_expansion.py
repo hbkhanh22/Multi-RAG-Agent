@@ -44,7 +44,8 @@ class QueryExpander:
                 api_key=settings.nvidia_api_key,
                 temperature=0.3,
                 max_tokens=1000,
-                timeout=settings.llm_timeout
+                timeout=settings.llm_timeout,
+                **({} if settings.llm_enable_thinking else {"chat_template_kwargs": {"enable_thinking": False}}),
             )
         except Exception as e:
             logger.error(f"Failed to initialize LLM: {e}")

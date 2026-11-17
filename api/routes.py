@@ -9,7 +9,7 @@ the event loop.
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 
 from src.graph import run_workflow, stream_workflow
 from src.graph.nodes import router_agent
+from src.memory import conversation_store
 from src.retrieval import vector_store_manager
 from api.schemas import (
     QueryRequest,
@@ -40,6 +41,34 @@ def _internal_error(context: str, exc: Exception) -> HTTPException:
     trace_id = uuid4().hex[:8]
     logger.error(f"[{trace_id}] {context}: {exc}", exc_info=True)
     return HTTPException(status_code=500, detail=f"Internal server error (trace id: {trace_id})")
+
+
+def _open_conversation(conversation_id: Optional[str]) -> Tuple[Optional[str], List[Dict[str, str]]]:
+    """Resolve the conversation (creating one if needed) and load its recent history."""
+    try:
+        if conversation_id and conversation_store.exists(conversation_id):
+            return conversation_id, conversation_store.get_recent(conversation_id, settings.memory_max_turns * 2)
+        return conversation_store.create_conversation(), []
+    except Exception as e:  # memory must never take chat down
+        logger.error(f"Conversation store unavailable: {e}", exc_info=True)
+        return None, []
+
+
+def _remember(cid: Optional[str], query: str, resp: QueryResponse) -> None:
+    """Persist a finished turn; failed answers are not stored (they would pollute context)."""
+    if not cid or not resp.success or not resp.final_answer:
+        return
+    try:
+        conversation_store.add_exchange(cid, query, resp.final_answer, meta={
+            "route": resp.route,
+            "confidence": resp.confidence,
+            "success": resp.success,
+            "sources": [s.model_dump(exclude_none=True) for s in resp.sources],
+            "key_themes": resp.key_themes,
+            "processing_time": (resp.metadata or {}).get("processing_time"),
+        })
+    except Exception as e:
+        logger.error(f"Failed to save conversation turn: {e}", exc_info=True)
 
 
 def _build_response(query: str, result: Dict[str, Any], include_metadata: bool = False) -> QueryResponse:
@@ -66,8 +95,12 @@ def query_endpoint(request: QueryRequest):
     """Process a query through the multi-RAG agent system"""
     try:
         logger.info(f"Processing query: {request.query}")
-        result = run_workflow(request.query, debug=request.debug)
-        return _build_response(request.query, result, request.include_metadata)
+        cid, history = _open_conversation(request.conversation_id)
+        result = run_workflow(request.query, debug=request.debug, history=history)
+        resp = _build_response(request.query, result, request.include_metadata)
+        resp.conversation_id = cid
+        _remember(cid, request.query, resp)
+        return resp
     except Exception as e:
         raise _internal_error("query failed", e)
 
@@ -85,9 +118,12 @@ def query_stream_endpoint(request: QueryRequest):
     """
     def events():
         try:
-            for event in stream_workflow(request.query):
+            cid, history = _open_conversation(request.conversation_id)
+            for event in stream_workflow(request.query, history):
                 if event.get("type") == "final":
                     resp = _build_response(request.query, event["state"], request.include_metadata)
+                    resp.conversation_id = cid
+                    _remember(cid, request.query, resp)
                     yield _sse({"type": "final", "response": resp.model_dump()})
                 elif event.get("type") == "error":
                     trace_id = uuid4().hex[:8]
@@ -125,6 +161,40 @@ def batch_query_endpoint(request: BatchQueryRequest):
         )
     except Exception as e:
         raise _internal_error("batch failed", e)
+
+
+@router.get("/conversations")
+def list_conversations_endpoint(limit: int = 50):
+    """Recent conversations (newest first) for the sidebar"""
+    try:
+        return {"conversations": conversation_store.list_conversations(min(max(limit, 1), 200))}
+    except Exception as e:
+        raise _internal_error("list conversations failed", e)
+
+
+@router.get("/conversations/{conversation_id}")
+def get_conversation_endpoint(conversation_id: str):
+    """Full message history of one conversation (to restore a chat)"""
+    try:
+        if not conversation_store.exists(conversation_id):
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return {"id": conversation_id, "messages": conversation_store.get_messages(conversation_id)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _internal_error("get conversation failed", e)
+
+
+@router.delete("/conversations/{conversation_id}")
+def delete_conversation_endpoint(conversation_id: str):
+    try:
+        if not conversation_store.delete_conversation(conversation_id):
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return {"deleted": conversation_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _internal_error("delete conversation failed", e)
 
 
 @router.post("/route")
