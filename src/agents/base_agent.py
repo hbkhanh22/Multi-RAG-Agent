@@ -39,7 +39,7 @@ class BaseAgent(ABC):
                 temperature=self.temperature,
                 max_tokens=max_tokens or settings.llm_max_tokens,
                 timeout=settings.llm_timeout,
-                **({} if settings.llm_enable_thinking else {"chat_template_kwargs": {"enable_thinking": False}}),
+                **({} if settings.llm_enable_thinking else {"model_kwargs": {"chat_template_kwargs": {"enable_thinking": False}}}),
             )
             logger.info(f"Initialized {self.name} with model {self.model}")
         except Exception as e:

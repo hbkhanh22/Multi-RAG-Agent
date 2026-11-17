@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 NextNode = Literal[
     "supervisor", "finance_agent", "tech_agent", "general_agent",
-    "web_agent", "direct_chat_agent",
+    "web_agent", "tool_agent", "direct_chat_agent",
 ]
 
 
@@ -35,6 +35,7 @@ def route_after_router(state: AgentState) -> NextNode:
         "finance": "finance_agent",
         "tech": "tech_agent",
         "web": "web_agent",
+        "tools": "tool_agent",
     }.get(domain, "general_agent")
 
 

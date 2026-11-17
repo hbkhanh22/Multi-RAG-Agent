@@ -8,6 +8,7 @@ from .router_agent import RouterAgent
 from .supervisor_agent import SupervisorAgent
 from .synthesizer_agent import SynthesizerAgent
 from .web_agent import WebAgent
+from .tool_agent import ToolAgent
 
 __all__ = [
     "BaseAgent",
@@ -16,4 +17,5 @@ __all__ = [
     "SupervisorAgent",
     "SynthesizerAgent",
     "WebAgent",
+    "ToolAgent",
 ]

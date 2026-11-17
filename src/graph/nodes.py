@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
 
 from src.agents.base_agent import BaseAgent
-from src.agents import RouterAgent, RAGAgent, SupervisorAgent, SynthesizerAgent, WebAgent
+from src.agents import RouterAgent, RAGAgent, SupervisorAgent, SynthesizerAgent, WebAgent, ToolAgent
 from src.graph.state import AgentState
 from src.utils import Timer
 from src.memory import condense_prompt, format_history, history_to_messages, needs_condense
@@ -56,7 +56,8 @@ rag_agents = {
     "tech": RAGAgent("tech"),
     "general": RAGAgent("general"),
 }
-supervisor_agent = SupervisorAgent(agents={**rag_agents, "web": web_agent})
+tool_agent = ToolAgent()
+supervisor_agent = SupervisorAgent(agents={**rag_agents, "web": web_agent, "tools": tool_agent})
 chat_agent = ChatAgent()
 
 
@@ -114,6 +115,7 @@ def _run_agent(name: str, agent, state: AgentState) -> Dict[str, Any]:
             "query": _q(state),
             "history": format_history(state.get("history") or []),
             "on_token": lambda t: emit({"type": "token", "text": t}),
+            "on_event": emit,
         })
     logger.info(f"{name} result: success={result.get('success')}")
     return {"agent_responses": {name: result}}
@@ -138,6 +140,12 @@ def web_agent_node(state: AgentState) -> Dict[str, Any]:
     """Web search agent node for live internet queries"""
     logger.info("=== WEB AGENT NODE ===")
     return _run_agent("web", web_agent, state)
+
+
+def tool_agent_node(state: AgentState) -> Dict[str, Any]:
+    """MCP tool-calling agent node (files, URL fetch...)"""
+    logger.info("=== TOOL AGENT NODE ===")
+    return _run_agent("tools", tool_agent, state)
 
 
 def supervisor_node(state: AgentState) -> Dict[str, Any]:

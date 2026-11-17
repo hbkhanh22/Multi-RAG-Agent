@@ -276,6 +276,13 @@ Truy cập giao diện chat tại: http://localhost:5173
 
 ## 8. API Endpoints & Cách Sử Dụng
 
+### MCP client (công cụ ngoài qua Model Context Protocol)
+- Agent `tools` gọi công cụ của các MCP server khai báo trong `config/mcp_servers.json` (mặc định: **filesystem** chỉ đọc trong `data/mcp_workspace/` và **fetch** tải nội dung URL công khai). Router chỉ đưa route `tools` ra khi có server đã kết nối; câu như "Đọc file ghi_chu.txt", "Tóm tắt trang https://..." sẽ đi vào đây.
+- Vòng lặp tool-calling gốc của model (tối đa `MCP_MAX_ITERATIONS`=5 vòng): model chọn tool → chạy qua MCP → trả kết quả lại cho model → câu trả lời cuối được stream. Giao diện hiện "Đang dùng công cụ ..." và danh sách công cụ đã dùng dưới mỗi câu trả lời. `GET /api/mcp/status` xem server và tool đang có.
+- Thêm server: thêm mục vào `servers` (`command`, `args`, `env`, `allowed_tools`, `enabled`); `${WORKSPACE}` và `${BIEN_MOI_TRUONG}` được thay thế. Cần `npx` (Node) hoặc `uvx` (uv) trong PATH; lần đầu có thể mất thời gian tải gói. Server lỗi chỉ bị bỏ qua, không làm hỏng các server khác. Tắt hẳn bằng `MCP_ENABLED=false`.
+- **An toàn:** chỉ tool nằm trong `allowed_tools` được đưa cho model (filesystem: chỉ các tool đọc, không có ghi/xóa); filesystem bị giới hạn trong workspace; tham số `url` bị chặn nếu trỏ tới địa chỉ nội bộ (SSRF); kết quả tool được coi là dữ liệu không tin cậy và bị cắt ở `MCP_MAX_OUTPUT_CHARS`. Khi thêm server có khả năng ghi (ghi file, DB, gửi mail...) hãy cân nhắc kỹ `allowed_tools`, vì nội dung web/file có thể chứa chỉ dẫn độc hại (prompt injection).
+- Kết nối MCP chỉ thực hiện lúc khởi động; đổi cấu hình cần khởi động lại server.
+
 ### Conversation memory (bộ nhớ hội thoại)
 - Hội thoại lưu ở SQLite `data/memory.db` (bảng `conversations`, `messages`). Gửi `conversation_id` trong `/api/query` hoặc `/api/query/stream` để tiếp tục; bỏ trống thì server tạo mới và trả `conversation_id` trong kết quả (`final`).
 - Câu hỏi nối tiếp ("giải thích kỹ hơn về nó") được node `condense` viết lại thành câu độc lập bằng model nhỏ trước khi route/truy xuất; chỉ chạy khi có lịch sử và câu hỏi trông như câu nối tiếp (ngắn hoặc có đại từ), câu chào bỏ qua.

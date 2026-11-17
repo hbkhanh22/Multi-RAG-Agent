@@ -17,6 +17,7 @@ from .nodes import (
     tech_rag_node,
     general_rag_node,
     web_agent_node,
+    tool_agent_node,
     supervisor_node,
     synthesizer_node,
     direct_chat_node,
@@ -36,6 +37,7 @@ def build_agent_graph():
     graph.add_node("tech_agent", tech_rag_node)
     graph.add_node("general_agent", general_rag_node)
     graph.add_node("web_agent", web_agent_node)
+    graph.add_node("tool_agent", tool_agent_node)
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("synthesizer", synthesizer_node)
     graph.add_node("direct_chat_agent", direct_chat_node)
@@ -52,11 +54,12 @@ def build_agent_graph():
             "tech_agent": "tech_agent",
             "general_agent": "general_agent",
             "web_agent": "web_agent",
+            "tool_agent": "tool_agent",
             "direct_chat_agent": "direct_chat_agent",
         },
     )
 
-    for node in ("finance_agent", "tech_agent", "general_agent", "web_agent", "supervisor"):
+    for node in ("finance_agent", "tech_agent", "general_agent", "web_agent", "tool_agent", "supervisor"):
         graph.add_edge(node, "synthesizer")
 
     graph.add_edge("direct_chat_agent", END)

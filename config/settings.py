@@ -18,7 +18,7 @@ _PATH_FIELDS = (
     "data_dir",
     "finance_data_path", "tech_data_path", "general_data_path",
     "finance_store_path", "tech_store_path", "general_store_path",
-    "log_dir", "memory_db_path",
+    "log_dir", "memory_db_path", "mcp_config_path", "mcp_workspace_dir",
 )
 
 
@@ -91,6 +91,15 @@ class Settings(BaseSettings):
     tech_store_path: Path = Path("data/vectorstores/tech_store")
     general_store_path: Path = Path("data/vectorstores/general_store")
     log_dir: Path = Path("logs")
+
+    # ============= MCP (Model Context Protocol) client =============
+    mcp_enabled: bool = True
+    mcp_config_path: Path = Path("config/mcp_servers.json")
+    mcp_workspace_dir: Path = Path("data/mcp_workspace")   # root exposed to the filesystem server
+    mcp_connect_timeout: int = 90      # first run may download the server package (npx/uvx)
+    mcp_tool_timeout: int = 60
+    mcp_max_iterations: int = 5        # tool-call rounds per question
+    mcp_max_output_chars: int = 8000   # cap on one tool result sent back to the model
 
     # ============= Conversation memory =============
     memory_db_path: Path = Path("data/memory.db")

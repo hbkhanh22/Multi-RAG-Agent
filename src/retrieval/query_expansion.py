@@ -45,7 +45,7 @@ class QueryExpander:
                 temperature=0.3,
                 max_tokens=1000,
                 timeout=settings.llm_timeout,
-                **({} if settings.llm_enable_thinking else {"chat_template_kwargs": {"enable_thinking": False}}),
+                **({} if settings.llm_enable_thinking else {"model_kwargs": {"chat_template_kwargs": {"enable_thinking": False}}}),
             )
         except Exception as e:
             logger.error(f"Failed to initialize LLM: {e}")

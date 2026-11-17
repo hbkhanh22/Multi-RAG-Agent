@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 
 from src.graph import run_workflow, stream_workflow
 from src.graph.nodes import router_agent
+from src.mcp_client import mcp_manager
 from src.memory import conversation_store
 from src.retrieval import vector_store_manager
 from api.schemas import (
@@ -66,6 +67,7 @@ def _remember(cid: Optional[str], query: str, resp: QueryResponse) -> None:
             "sources": [s.model_dump(exclude_none=True) for s in resp.sources],
             "key_themes": resp.key_themes,
             "processing_time": (resp.metadata or {}).get("processing_time"),
+            "tool_calls": (resp.agent_responses.get("tools") or {}).get("tool_calls", []),
         })
     except Exception as e:
         logger.error(f"Failed to save conversation turn: {e}", exc_info=True)
@@ -163,6 +165,17 @@ def batch_query_endpoint(request: BatchQueryRequest):
         raise _internal_error("batch failed", e)
 
 
+@router.get("/mcp/status")
+def mcp_status_endpoint():
+    """Connected MCP servers and the tools the agent may call"""
+    status = mcp_manager.status()
+    status["tools"] = [
+        {"name": spec["function"]["name"], "description": spec["function"]["description"][:200]}
+        for spec in mcp_manager.tool_specs()
+    ]
+    return status
+
+
 @router.get("/conversations")
 def list_conversations_endpoint(limit: int = 50):
     """Recent conversations (newest first) for the sidebar"""
@@ -221,6 +234,12 @@ def health_check():
         stats = vector_store_manager.get_store_stats(domain)
         components[f"vector_store_{domain}"] = "healthy" if "error" not in stats else "unavailable"
     components["llm_api_key"] = "configured" if settings.nvidia_api_key else "missing"
+    mcp = mcp_manager.status()
+    components["mcp"] = (
+        "disabled" if not mcp["enabled"]
+        else f"{mcp['tool_count']} tools" if mcp["tool_count"]
+        else "connecting" if not mcp["ready"] else "no tools"
+    )
 
     degraded = any(v in ("unavailable", "missing") for v in components.values())
     return HealthResponse(

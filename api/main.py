@@ -17,6 +17,7 @@ from api.routes import router
 from config.settings import settings
 from src.utils import api_logger
 from src.ingestion import auto_ingest_raw_documents
+from src.mcp_client import mcp_manager
 
 # Configure logging
 logging.basicConfig(level=settings.log_level)
@@ -39,9 +40,13 @@ async def lifespan(app: FastAPI):
     # Run ingestion in the background so the API starts answering immediately
     threading.Thread(target=_ingest, name="auto-ingest", daemon=True).start()
 
+    # Connect to MCP servers in the background too (npx/uvx may download packages on first run)
+    mcp_manager.start()
+
     yield
     
     # Shutdown
+    mcp_manager.stop()
     api_logger.info("Shutting down Multi-RAG Agent System API")
 
 

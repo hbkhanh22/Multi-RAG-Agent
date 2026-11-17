@@ -25,6 +25,7 @@ import {
   Sun,
   Trash2,
   TrendingUp,
+  Wrench,
   User,
   Zap,
 } from "lucide-react";
@@ -158,6 +159,7 @@ export default function App() {
               sources: m.meta.sources || [],
               keyThemes: m.meta.key_themes || [],
               processingTime: m.meta.processing_time,
+              toolCalls: m.meta.tool_calls || [],
             }
           : undefined,
     }));
@@ -310,6 +312,8 @@ export default function App() {
       const handleEvent = (event) => {
         if (event.type === "stage") {
           setStage(event.stage);
+        } else if (event.type === "tool") {
+          if (event.status === "running") setStage(`tool:${event.server} · ${event.tool}`);
         } else if (event.type === "token") {
           streamedText += event.text;
           if (!started) {
@@ -336,6 +340,7 @@ export default function App() {
             sources: payload.sources || [],
             keyThemes: payload.key_themes || [],
             processingTime: payload.metadata?.processing_time,
+            toolCalls: payload.agent_responses?.tools?.tool_calls || [],
           };
           const content = payload.final_answer || streamedText || "Agent không trả về nội dung.";
           if (started) {
@@ -658,7 +663,11 @@ export default function App() {
               <div className="bubble thinkingBubble">
                 <div className="thinkingHeader">
                   <Loader2 size={16} className="spinIcon" />
-                  <span>{STAGE_LABELS[stage] || "Multi-RAG Agent đang xử lý..."}</span>
+                  <span>
+                    {stage.startsWith("tool:")
+                      ? `Đang dùng công cụ ${stage.slice(5)}...`
+                      : STAGE_LABELS[stage] || "Multi-RAG Agent đang xử lý..."}
+                  </span>
                 </div>
                 <div className="thinkingBar">
                   <div className="thinkingShimmer" />
@@ -741,8 +750,9 @@ export default function App() {
 function MessageMeta({ meta }) {
   const hasSources = Array.isArray(meta.sources) && meta.sources.length > 0;
   const hasThemes = Array.isArray(meta.keyThemes) && meta.keyThemes.length > 0;
+  const hasTools = Array.isArray(meta.toolCalls) && meta.toolCalls.length > 0;
 
-  if (!meta.route && !hasSources && !hasThemes && typeof meta.confidence !== "number") {
+  if (!meta.route && !hasSources && !hasThemes && !hasTools && typeof meta.confidence !== "number") {
     return null;
   }
 
@@ -764,6 +774,27 @@ function MessageMeta({ meta }) {
           </span>
         )}
       </div>
+
+      {hasTools && (
+        <details className="toolCalls">
+          <summary>
+            <Wrench size={14} />
+            <span>Công cụ MCP đã dùng ({meta.toolCalls.length})</span>
+            <ChevronDown size={14} className="chevron" />
+          </summary>
+          <ul className="toolList">
+            {meta.toolCalls.map((t, i) => (
+              <li key={i} className={t.ok ? "" : "toolFailed"}>
+                <code>
+                  {t.server} · {t.tool}
+                </code>
+                <span className="toolArgs">{JSON.stringify(t.arguments)}</span>
+                <span className="toolStatus">{t.ok ? "thành công" : "lỗi"}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
 
       {hasThemes && (
         <div className="chips">

@@ -10,6 +10,7 @@ import unicodedata
 
 from .base_agent import BaseAgent
 from config.settings import settings
+from src.mcp_client import mcp_manager
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ class RouterAgent(BaseAgent):
             max_tokens=settings.router_max_tokens,
         )
         
-        self.domains = ["finance", "tech", "general", "web"]
+        self.domains = ["finance", "tech", "general", "web", "tools"]
         self.multi_domain_threshold = 0.5
     
     def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -104,6 +105,25 @@ class RouterAgent(BaseAgent):
                 "error": str(e)
             }
     
+    @staticmethod
+    def _tools_available() -> bool:
+        return mcp_manager.has_tools()
+
+    def _fill_tools(self, prompt: str) -> str:
+        """Offer the 'tools' route only while MCP servers are actually connected."""
+        domains = ["finance", "tech", "general", "web"] + (["tools"] if self._tools_available() else []) + ["direct_chat"]
+        tools_rule = tools_key = ""
+        if self._tools_available():
+            tools_rule = (
+                "- tools: The user explicitly asks to read, list or search FILES in the workspace folder, "
+                "or to open/fetch/summarize the content of a SPECIFIC URL or web page.\n"
+                '  Examples: "Đọc file hello.txt", "Liệt kê các file trong workspace", "Tóm tắt trang https://example.com"\n'
+            )
+            tools_key = "4. Use 'tools' ONLY for file access or fetching a given URL, not for general web search.\n"
+        return (prompt.replace("{tools_rule}", tools_rule).replace("{tools_key_rule}", tools_key)
+                .replace("{domain_enum}", "|".join(domains))
+                .replace("{domain_list}", ", ".join(f'"{d}"' for d in domains)))
+
     def _classify_query(self, query: str) -> Dict[str, Any]:
         """
         Classify query into domains using LLM
@@ -124,22 +144,23 @@ Your task is to analyze the user's message and determine the optimal routing:
 - finance: In-depth financial analysis, corporate filings, balance sheets, economics, bond markets, banking regulations, and historical financial concepts stored in internal docs.
 - tech: Programming languages, AI/ML theory, system architecture, backend/frontend engineering, DevOps, internal tech documentations.
 - general: General knowledge, history, geography, encyclopedic topics stored in internal docs.
-- multi: Complex queries requiring information from multiple domains (e.g. tech + finance, or finance + web).
+{tools_rule}- multi: Complex queries requiring information from multiple domains (e.g. tech + finance, or finance + web).
 
 Key rules:
 1. ONLY choose direct_chat when there is NO lookup needed.
 2. If the user asks about current events, breaking news, "hôm nay", "mới nhất", "bây giờ", or requests web search, choose 'web'.
 3. If the query requires both domain docs and web search, choose 'multi' with both in all_domains.
 
-Respond with ONLY a valid JSON object, no markdown, no explanation outside the JSON:
+{tools_key_rule}Respond with ONLY a valid JSON object, no markdown, no explanation outside the JSON:
 {
-  "primary_domain": "finance|tech|general|web|direct_chat",
-  "all_domains": ["finance", "tech", "general", "web", "direct_chat"],
+  "primary_domain": "{domain_enum}",
+  "all_domains": [{domain_list}],
   "domain_scores": {"finance": 0.0, "tech": 0.0, "general": 0.0, "web": 0.0, "direct_chat": 0.0},
-  "route": "finance|tech|general|web|multi|direct_chat",
+  "route": "{domain_enum}|multi",
   "confidence": 0.95,
   "reasoning": "one-sentence explanation"
 }"""
+            system_prompt = self._fill_tools(system_prompt)
             
             prompt = f"""Classify this query:
 
@@ -151,7 +172,16 @@ Respond with JSON only:"""
             
             # Try to extract JSON from response
             classification = self._parse_classification_response(response)
-            
+
+            # 'tools' without connected MCP servers cannot be served: use web search instead
+            if "tools" in classification.get("agents", []) and not self._tools_available():
+                agents = [("web" if a == "tools" else a) for a in classification["agents"]]
+                classification["agents"] = list(dict.fromkeys(agents))
+                classification["all_domains"] = classification["agents"]
+                classification["route"] = (
+                    classification["agents"][0] if len(classification["agents"]) == 1 else classification["route"]
+                )
+
             return classification
         
         except Exception as e:

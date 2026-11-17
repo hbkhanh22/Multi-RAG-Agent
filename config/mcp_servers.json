@@ -1,0 +1,24 @@
+{
+  "_comment": "MCP servers the agent can use as tools. ${WORKSPACE} = settings.mcp_workspace_dir; ${NAME} = environment variable. allowed_tools is an allow-list (omit to expose every tool of the server). Set enabled=false to skip a server.",
+  "servers": {
+    "filesystem": {
+      "enabled": true,
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "${WORKSPACE}"],
+      "allowed_tools": [
+        "read_text_file",
+        "read_multiple_files",
+        "list_directory",
+        "directory_tree",
+        "search_files",
+        "get_file_info",
+        "list_allowed_directories"
+      ]
+    },
+    "fetch": {
+      "enabled": true,
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    }
+  }
+}

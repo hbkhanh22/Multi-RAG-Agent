@@ -29,6 +29,9 @@ ddgs>=9.0
 httpx>=0.27
 beautifulsoup4>=4.12
 
+# MCP client (tools from external MCP servers)
+mcp>=1.2
+
 # Utilities
 python-dotenv>=1.0
 
