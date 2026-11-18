@@ -17,6 +17,8 @@
 6. [Cấu Hình Hệ Thống (Configuration)](#6-cấu-hình-hệ-thống-configuration)
 7. [Hướng Dẫn Cài Đặt & Khởi Chạy](#7-hướng-dẫn-cài-đặt--khởi-chạy)
 8. [API Endpoints & Cách Sử Dụng](#8-api-endpoints--cách-sử-dụng)
+9. [Khởi Chạy Trực Tiếp Qua Python Script](#9-khởi-chạy-trực-tiếp-qua-python-script)
+10. [Tiến Độ Dự Án](#10-tiến-độ-dự-án)
 
 ---
 
@@ -134,10 +136,11 @@ Hệ thống tích hợp **Web Search Tool** (sử dụng thư viện `ddgs` - D
 multi-rag-agent/
 ├── api/                           # FastAPI Backend
 │   ├── main.py                    # Khởi tạo app, CORS, lifespan nạp dữ liệu tự động
-│   ├── routes.py                  # Các endpoint /query, /batch, /route, /health, /stats
+│   ├── routes.py                  # /query, /query/stream, /query/batch, /route, /health, /stats, /conversations, /mcp/status
 │   └── schemas.py                 # Pydantic schemas cho Request & Response
 ├── config/                        # Cấu hình hệ thống
-│   └── settings.py                # Pydantic BaseSettings đọc biến môi trường (.env)
+│   ├── settings.py                # Pydantic BaseSettings đọc biến môi trường (.env)
+│   └── mcp_servers.json           # Khai báo MCP server (filesystem, fetch) + allow-list tool
 ├── data/                          # Dữ liệu
 │   ├── raw/                       # Thư mục chứa tài liệu gốc theo miền
 │   │   ├── finance/               # Báo cáo tài chính, tài liệu ngân hàng (.pdf, .txt, .docx)
@@ -157,6 +160,7 @@ multi-rag-agent/
 │   │   ├── router_agent.py        # Agent phân loại ý định & routing
 │   │   ├── rag_agent.py           # Specialist Agent thực hiện chu trình RAG
 │   │   ├── web_agent.py           # Tìm kiếm web (DuckDuckGo)
+│   │   ├── tool_agent.py          # Vòng lặp tool-calling qua MCP (đọc file, fetch URL)
 │   │   ├── supervisor_agent.py    # Chạy song song nhiều agent cho câu hỏi đa miền
 │   │   └── synthesizer_agent.py   # Tổng hợp phản hồi & trích dẫn nguồn
 │   ├── graph/                     # Xây dựng đồ thị LangGraph
@@ -173,6 +177,9 @@ multi-rag-agent/
 │   │   ├── vector_store.py        # VectorStoreManager: 3 collection Chroma, vector/BM25/hybrid search
 │   │   ├── reranker.py            # Cross-Encoder Reranker
 │   │   └── query_expansion.py     # Kỹ thuật HyDE & Multi-Query Expansion
+│   ├── mcp_client/manager.py      # MCPManager: kết nối stdio, allow-list, chặn SSRF, timeout
+│   ├── memory/                    # Bộ nhớ hội thoại SQLite + viết lại câu hỏi nối tiếp
+│   ├── tools/                     # WebSearchTool, WebScraperTool (calculator/search_tools chưa nối vào graph)
 │   └── utils/                     # Công cụ ghi log và bộ đo thời gian (Timer)
 ├── tests/                         # pytest (LLM giả, kho vector + reranker thật)
 ├── requirements.txt               # Thư viện phụ thuộc Python
@@ -392,3 +399,50 @@ print("\n=== NGUỒN TRÍCH DẪN ===")
 for source in result["sources"]:
     print(f"- Nguồn: {source.get('source')}, Trang: {source.get('page')}")
 ```
+
+---
+
+## 10. Tiến Độ Dự Án
+
+> Cập nhật: 18/11/2026 · Đánh giá từ mã nguồn tại commit `950f876` · Test: **82/82 passed** (`python -m pytest -q`, ~2 phút 13 giây)
+
+### Các mốc đã hoàn thành (theo lịch sử commit)
+
+| # | Commit | Mốc |
+| :-- | :-- | :-- |
+| 1 | `29105e0` | Khởi tạo dự án: LangGraph, các agent, ingestion, ChromaDB, FastAPI, React UI |
+| 2 | `e37eea4` | Dọn repo: bỏ theo dõi `node_modules`, build, vectorstore, log |
+| 3 | `413ab2e` | Sửa workflow chạy đúng; truy xuất và nạp tài liệu nhanh hơn |
+| 4 | `cfb7a49` | Gia cố API (ẩn lỗi nội bộ, trace id, giới hạn batch), cập nhật frontend và tài liệu |
+| 5 | `220eea1` | Bộ test pytest (LLM giả, truy xuất thật) |
+| 6 | `bf51270` | Embedding đa ngôn ngữ `bge-m3` và reranker `bge-reranker-v2-m3` |
+| 7 | `3944c52` | Đường tắt câu chào (không gọi LLM), model nhỏ cho router/chat, streaming SSE |
+| 8 | `fe4f366` | Bộ nhớ hội thoại SQLite, viết lại câu hỏi nối tiếp, lịch sử ở sidebar |
+| 9 | `950f876` | MCP client và Tool Agent (filesystem chỉ đọc + fetch URL) |
+
+### Trạng thái theo thành phần
+
+| Thành phần | Trạng thái | Ghi chú |
+| :-- | :-- | :-- |
+| Ingestion tự động (PDF/TXT/MD/DOCX, manifest, xóa chunk cũ) | ✅ Hoàn thành | Chạy nền khi khởi động |
+| Hybrid retrieval (vector + BM25, weighted RRF) | ✅ Hoàn thành | |
+| Cross-encoder rerank + ngưỡng liên quan | ✅ Hoàn thành | |
+| Fallback 3 tầng (domain chính → domain khác → web) | ✅ Hoàn thành | |
+| Query expansion | 🟡 Một phần | Multi-query bật; HyDE, synonyms, domain-specific có code nhưng tắt |
+| Router (regex fast path + LLM JSON) | ✅ Hoàn thành | Route `tools` chỉ xuất hiện khi MCP đã kết nối |
+| RAG agent theo domain (Finance / Tech / General) | 🟡 Một phần | Code xong; **chỉ `data/raw/tech` có tài liệu** (3 PDF), Finance và General đang trống |
+| Web Agent (DuckDuckGo) | ✅ Hoàn thành | `WebScraperTool` có sẵn nhưng Web Agent chưa dùng |
+| Supervisor (song song) + Synthesizer (đánh số nguồn toàn cục) | ✅ Hoàn thành | |
+| Tool Agent qua MCP | ✅ Hoàn thành | Chỉ đọc; chặn SSRF; tối đa 5 vòng |
+| Bộ nhớ hội thoại | ✅ Hoàn thành | Chưa có xác thực người dùng |
+| Streaming SSE + React UI | ✅ Hoàn thành | Theme sáng/tối, lịch sử hội thoại, trạng thái API |
+| Kiểm thử tự động | ✅ 82 test | API, workflow, MCP, memory, đa ngôn ngữ, unit |
+
+### Việc còn tồn đọng / đề xuất tiếp theo
+
+- **Dữ liệu:** bổ sung tài liệu cho `data/raw/finance` và `data/raw/general`; hiện câu hỏi tài chính sẽ rơi xuống fallback web.
+- **Code chưa nối vào hệ thống:** `src/tools/calculator_tool.py`, `src/tools/search_tools.py`, `DocumentLoader`, `VectorStoreBuilder`, `CacheManager`, `POWERFUL_LLM_MODEL` (có thể nối thành tool cho agent hoặc xóa bớt).
+- **Route đa miền:** Supervisor chưa truyền lịch sử hội thoại cho các agent con (chỉ dùng câu hỏi đã viết lại) và không stream token trước bước tổng hợp.
+- **API:** trường `domain` trong `QueryRequest` chưa được dùng; `/api/stats` trả `uptime = 0` và danh sách agent chưa có `tools`.
+- **Bảo mật / vận hành:** chưa có xác thực, ai có `conversation_id` đều đọc được hội thoại; cấu hình MCP chỉ nạp lúc khởi động.
+- **Chưa có:** upload tài liệu qua API/UI, đánh giá chất lượng RAG (bộ câu hỏi chuẩn, đo độ chính xác), Docker/CI.
