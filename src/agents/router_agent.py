@@ -65,7 +65,7 @@ class RouterAgent(BaseAgent):
             max_tokens=settings.router_max_tokens,
         )
         
-        self.domains = ["finance", "tech", "general", "web", "tools"]
+        self.domains = ["sport", "tech", "general", "web", "tools"]
         self.multi_domain_threshold = 0.5
     
     def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -111,7 +111,7 @@ class RouterAgent(BaseAgent):
 
     def _fill_tools(self, prompt: str) -> str:
         """Offer the 'tools' route only while MCP servers are actually connected."""
-        domains = ["finance", "tech", "general", "web"] + (["tools"] if self._tools_available() else []) + ["direct_chat"]
+        domains = ["sport", "tech", "general", "web"] + (["tools"] if self._tools_available() else []) + ["direct_chat"]
         tools_rule = tools_key = ""
         if self._tools_available():
             tools_rule = (
@@ -139,12 +139,13 @@ class RouterAgent(BaseAgent):
 Your task is to analyze the user's message and determine the optimal routing:
 - direct_chat: Casual conversation, greetings, meta-questions about the AI, no external information needed.
   Examples: "Hello!", "Xin chào", "Cảm ơn bạn", "Bạn là ai?", "Bạn làm được gì?", "Tạm biệt"
-- web: Real-time queries, current news, live updates, today's events, weather, stock quotes today, latest software versions, or explicit requests to search online / internet / Google.
-  Examples: "Tin tức mới nhất hôm nay", "Giá vàng / Bitcoin hôm nay bao nhiêu?", "Tìm kiếm web về...", "Thời tiết Hà Nội hôm nay"
-- finance: In-depth financial analysis, corporate filings, balance sheets, economics, bond markets, banking regulations, and historical financial concepts stored in internal docs.
+- web: Real-time queries, current news, live updates, today's events, live scores and the latest match results, transfer news, weather, latest software versions, or explicit requests to search online / internet / Google.
+  Examples: "Tin tức mới nhất hôm nay", "Kết quả trận đấu tối qua?", "Tìm kiếm web về...", "Thời tiết Hà Nội hôm nay"
+- sport: Sports knowledge stored in internal docs: rules and laws of the game, tournaments and competition formats, history and records, clubs, athletes, tactics, training and sports science.
+  Examples: "Luật việt vị trong bóng đá là gì?", "Lịch sử World Cup", "Chiến thuật 4-3-3 vận hành thế nào?"
 - tech: Programming languages, AI/ML theory, system architecture, backend/frontend engineering, DevOps, internal tech documentations.
 - general: General knowledge, history, geography, encyclopedic topics stored in internal docs.
-{tools_rule}- multi: Complex queries requiring information from multiple domains (e.g. tech + finance, or finance + web).
+{tools_rule}- multi: Complex queries requiring information from multiple domains (e.g. tech + sport, or sport + web).
 
 Key rules:
 1. ONLY choose direct_chat when there is NO lookup needed.
@@ -155,7 +156,7 @@ Key rules:
 {
   "primary_domain": "{domain_enum}",
   "all_domains": [{domain_list}],
-  "domain_scores": {"finance": 0.0, "tech": 0.0, "general": 0.0, "web": 0.0, "direct_chat": 0.0},
+  "domain_scores": {"sport": 0.0, "tech": 0.0, "general": 0.0, "web": 0.0, "direct_chat": 0.0},
   "route": "{domain_enum}|multi",
   "confidence": 0.95,
   "reasoning": "one-sentence explanation"

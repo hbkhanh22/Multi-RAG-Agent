@@ -52,7 +52,7 @@ router_agent = RouterAgent()
 synthesizer_agent = SynthesizerAgent()
 web_agent = WebAgent()
 rag_agents = {
-    "finance": RAGAgent("finance"),
+    "sport": RAGAgent("sport"),
     "tech": RAGAgent("tech"),
     "general": RAGAgent("general"),
 }
@@ -121,9 +121,9 @@ def _run_agent(name: str, agent, state: AgentState) -> Dict[str, Any]:
     return {"agent_responses": {name: result}}
 
 
-def finance_rag_node(state: AgentState) -> Dict[str, Any]:
-    logger.info("=== FINANCE RAG NODE ===")
-    return _run_agent("finance", rag_agents["finance"], state)
+def sport_rag_node(state: AgentState) -> Dict[str, Any]:
+    logger.info("=== SPORT RAG NODE ===")
+    return _run_agent("sport", rag_agents["sport"], state)
 
 
 def tech_rag_node(state: AgentState) -> Dict[str, Any]:
@@ -204,7 +204,7 @@ def direct_chat_node(state: AgentState) -> Dict[str, Any]:
         "Bạn là trợ lý AI thông minh của hệ thống Multi-RAG Agent. "
         "Hãy chào hỏi hoặc trò chuyện một cách tự nhiên, lịch sự và thân thiện với người dùng (bằng cùng ngôn ngữ của người dùng). "
         "Cho người dùng biết bạn sẵn sàng giải đáp và tra cứu thông tin từ tài liệu trong các lĩnh vực: "
-        "Tài chính (Finance), Công nghệ (Tech) và Kiến thức tổng quát (General), cũng như tìm kiếm thông tin mới trên Internet."
+        "Thể thao (Sport), Công nghệ (Tech) và Kiến thức tổng quát (General), cũng như tìm kiếm thông tin mới trên Internet."
     )
 
     with Timer("Direct Chat"):

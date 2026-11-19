@@ -147,14 +147,14 @@ Generate {num_queries} alternative queries that capture different aspects:"""
         
         Args:
             query: Original query
-            domain: Domain (finance, tech, general)
+            domain: Domain (sport, tech, general)
         
         Returns:
             List of domain-specific queries
         """
         try:
             domain_context = {
-                "finance": "stock market, investment, economics, financial reports, trading",
+                "sport": "football, tournaments, rules, athletes, clubs, tactics, records, training",
                 "tech": "programming, software, hardware, AI, cloud, DevOps",
                 "general": "history, science, culture, news, education"
             }

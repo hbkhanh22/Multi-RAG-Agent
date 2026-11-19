@@ -43,7 +43,7 @@ def embedding_slug() -> str:
 class VectorStoreManager:
     """Manages vector stores for different domains"""
 
-    DOMAINS = ("finance", "tech", "general")
+    DOMAINS = ("sport", "tech", "general")
 
     def __init__(self):
         try:
@@ -65,7 +65,7 @@ class VectorStoreManager:
 
     def _store_path(self, domain: str) -> Path:
         base = {
-            "finance": settings.finance_store_path,
+            "sport": settings.sport_store_path,
             "tech": settings.tech_store_path,
             "general": settings.general_store_path,
         }[domain]

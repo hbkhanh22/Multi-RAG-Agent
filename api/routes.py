@@ -34,7 +34,7 @@ from config.settings import settings
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["Agent"])
 
-DOMAINS = ["finance", "tech", "general"]
+DOMAINS = ["sport", "tech", "general"]
 
 
 def _internal_error(context: str, exc: Exception) -> HTTPException:

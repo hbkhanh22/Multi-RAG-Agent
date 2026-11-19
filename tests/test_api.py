@@ -23,7 +23,7 @@ def test_invalid_domain_is_400_not_500(client):
 
 def test_stats(client):
     r = client.get("/api/stats")
-    assert r.status_code == 200 and set(r.json()["domains"]) == {"finance", "tech", "general"}
+    assert r.status_code == 200 and set(r.json()["domains"]) == {"sport", "tech", "general"}
 
 
 def test_query_validation(client):

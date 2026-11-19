@@ -171,7 +171,7 @@ def test_tool_agent_without_tools_fails_cleanly(modules):
 def test_router_accepts_tools_route(modules):
     from src.agents.router_agent import RouterAgent
     r = RouterAgent.__new__(RouterAgent)
-    r.domains = ["finance", "tech", "general", "web", "tools"]
+    r.domains = ["sport", "tech", "general", "web", "tools"]
     out = r._parse_classification_response('{"route": "tools", "confidence": 0.9}')
     assert out["route"] == "tools" and out["agents"] == ["tools"]
 
@@ -184,7 +184,7 @@ def test_edges_route_tools_to_tool_agent(modules):
 def test_tools_route_falls_back_to_web_when_no_servers(modules, monkeypatch):
     from src.agents.router_agent import RouterAgent
     r = RouterAgent.__new__(RouterAgent)
-    r.domains = ["finance", "tech", "general", "web", "tools"]
+    r.domains = ["sport", "tech", "general", "web", "tools"]
     monkeypatch.setattr(RouterAgent, "_tools_available", staticmethod(lambda: False))
     monkeypatch.setattr(RouterAgent, "invoke", lambda self, msgs, system_prompt=None, **k: '{"route": "tools"}')
     out = r._classify_query("Đọc file hello.txt")
@@ -197,7 +197,7 @@ def test_router_prompt_mentions_tools_only_when_available(modules, monkeypatch):
     seen = {}
     monkeypatch.setattr(RouterAgent, "invoke", lambda self, msgs, system_prompt=None, **k: seen.update(p=system_prompt) or '{"route": "web"}')
     monkeypatch.setattr(RouterAgent, "_tools_available", staticmethod(lambda: True))
-    r.domains = ["finance", "tech", "general", "web", "tools"]
+    r.domains = ["sport", "tech", "general", "web", "tools"]
     r._classify_query("q")
     assert "- tools:" in seen["p"] and "{" in seen["p"] and "{tools_rule}" not in seen["p"] and "{domain" not in seen["p"]
     monkeypatch.setattr(RouterAgent, "_tools_available", staticmethod(lambda: False))

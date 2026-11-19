@@ -19,11 +19,11 @@ def test_tech_question_uses_tech_docs(fake_llm, fake_web, tech_ready):
 
 
 def test_irrelevant_local_docs_fall_back_to_web(fake_llm, fake_web, tech_ready):
-    """Regression: finance store is empty and tech docs are unrelated -> must use web, not tech docs."""
-    fake_llm.route_json = {"route": "finance", "all_domains": ["finance"], "confidence": 0.9}
+    """Regression: sport store is empty and tech docs are unrelated -> must use web, not tech docs."""
+    fake_llm.route_json = {"route": "sport", "all_domains": ["sport"], "confidence": 0.9}
     r = run(OFF_TOPIC_QUERY)
     assert r["status"] == "complete"
-    resp = r["agent_responses"]["finance"]
+    resp = r["agent_responses"]["sport"]
     assert resp["fallback"] == "web"
     assert all(s["url"].startswith("https://example.com") for s in r["sources"])
 

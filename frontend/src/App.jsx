@@ -24,7 +24,7 @@ import {
   Sparkles,
   Sun,
   Trash2,
-  TrendingUp,
+  Trophy,
   Wrench,
   User,
   Zap,
@@ -52,10 +52,10 @@ const SAMPLE_QUESTIONS = [
     prompt: "Model Context Protocol (MCP) là gì, vì sao nó quan trọng và các tính năng cốt lõi?",
   },
   {
-    icon: TrendingUp,
-    domain: "Finance",
-    label: "Tài chính doanh nghiệp",
-    prompt: "Các phương pháp định giá cổ phiếu phổ biến và cách đọc báo cáo lưu chuyển tiền tệ?",
+    icon: Trophy,
+    domain: "Sport",
+    label: "Luật & lịch sử thể thao",
+    prompt: "Luật việt vị trong bóng đá được quy định thế nào và VAR hỗ trợ ra sao?",
   },
   {
     icon: Layers,
@@ -84,7 +84,7 @@ const INITIAL_MESSAGES = [
     id: "welcome-msg",
     role: "assistant",
     content:
-      "### 👋 Xin chào! Tôi là Multi-RAG Autonomous Agent\nTôi có thể hỗ trợ bạn tra cứu và phân tích sâu về **Kỹ thuật công nghệ (Tech)**, **Tài chính doanh nghiệp (Finance)** từ kho tài liệu nội bộ, đồng thời **Tìm kiếm thông tin thời sự trực tiếp trên Internet (Web Search)**.\n\n*Hãy nhập câu hỏi bên dưới hoặc chọn gợi ý nhanh để bắt đầu!*",
+      "### 👋 Xin chào! Tôi là Multi-RAG Autonomous Agent\nTôi có thể hỗ trợ bạn tra cứu và phân tích sâu về **Kỹ thuật công nghệ (Tech)**, **Thể thao (Sport)** từ kho tài liệu nội bộ, đồng thời **Tìm kiếm thông tin thời sự trực tiếp trên Internet (Web Search)**.\n\n*Hãy nhập câu hỏi bên dưới hoặc chọn gợi ý nhanh để bắt đầu!*",
     meta: {
       route: "ready",
       confidence: 1,
@@ -475,11 +475,11 @@ export default function App() {
                 <small>Tài liệu, API & Kiến trúc</small>
               </div>
             </div>
-            <div className="domainItem finance">
-              <TrendingUp size={16} />
+            <div className="domainItem sport">
+              <Trophy size={16} />
               <div>
-                <strong>Finance Agent</strong>
-                <small>Báo cáo & phân tích tài chính</small>
+                <strong>Sport Agent</strong>
+                <small>Luật, giải đấu & lịch sử thể thao</small>
               </div>
             </div>
             <div className="domainItem web">

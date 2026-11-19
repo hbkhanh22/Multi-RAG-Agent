@@ -10,7 +10,7 @@ from .state import AgentState
 logger = logging.getLogger(__name__)
 
 NextNode = Literal[
-    "supervisor", "finance_agent", "tech_agent", "general_agent",
+    "supervisor", "sport_agent", "tech_agent", "general_agent",
     "web_agent", "tool_agent", "direct_chat_agent",
 ]
 
@@ -32,7 +32,7 @@ def route_after_router(state: AgentState) -> NextNode:
 
     domain = active_agents[0] if active_agents else "general"
     return {
-        "finance": "finance_agent",
+        "sport": "sport_agent",
         "tech": "tech_agent",
         "web": "web_agent",
         "tools": "tool_agent",

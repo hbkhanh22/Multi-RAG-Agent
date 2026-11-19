@@ -28,7 +28,7 @@ class SupervisorAgent(BaseAgent):
         super().__init__(name="Supervisor Agent", model=settings.default_llm_model, temperature=0.0)
 
         self.agents = agents or {
-            "finance": RAGAgent("finance"),
+            "sport": RAGAgent("sport"),
             "tech": RAGAgent("tech"),
             "general": RAGAgent("general"),
             "web": WebAgent(),

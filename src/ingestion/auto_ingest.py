@@ -81,7 +81,7 @@ def _iter_files() -> Iterator[Tuple[str, Path]]:
     """Yield (domain, file) for every supported file under data/raw."""
     supported = {e.lower() for e in settings.supported_file_types}
     folders = {
-        "finance": Path(settings.finance_data_path),
+        "sport": Path(settings.sport_data_path),
         "tech": Path(settings.tech_data_path),
         "general": Path(settings.general_data_path),
     }
@@ -110,7 +110,7 @@ def auto_ingest_raw_documents() -> Dict[str, int]:
 
     manifest = _load_manifest()
     chunker = DocumentChunker(chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)
-    stats = {"finance": 0, "tech": 0, "general": 0, "removed": 0, "total_chunks": 0}
+    stats = {"sport": 0, "tech": 0, "general": 0, "removed": 0, "total_chunks": 0}
     max_bytes = settings.max_file_size_mb * 1024 * 1024
 
     present = set()
@@ -170,7 +170,7 @@ def auto_ingest_raw_documents() -> Dict[str, int]:
 
     _save_manifest(manifest)
 
-    ingested = stats["finance"] + stats["tech"] + stats["general"]
+    ingested = stats["sport"] + stats["tech"] + stats["general"]
     if ingested or stats["removed"]:
         logger.info(
             f"Auto-ingestion completed: {ingested} documents ({stats['total_chunks']} chunks) added, "

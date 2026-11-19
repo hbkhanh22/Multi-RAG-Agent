@@ -5,7 +5,7 @@ Graph module - LangGraph workflow
 from .state import AgentState, MessageState, RouterState, RetrievalState, SynthesisState
 from .nodes import (
     router_node,
-    finance_rag_node,
+    sport_rag_node,
     tech_rag_node,
     general_rag_node,
     supervisor_node,
@@ -26,7 +26,7 @@ __all__ = [
     "RetrievalState",
     "SynthesisState",
     "router_node",
-    "finance_rag_node",
+    "sport_rag_node",
     "tech_rag_node",
     "general_rag_node",
     "supervisor_node",

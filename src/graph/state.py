@@ -22,7 +22,7 @@ class AgentState(TypedDict):
     standalone_query: str  # query rewritten to need no history (routing/retrieval use it)
     
     # ========== Routing ==========
-    route: str  # "finance" | "tech" | "general" | "multi"
+    route: str  # "sport" | "tech" | "general" | "multi"
     active_agents: List[str]  # List of agent names to activate
     router_confidence: float
     

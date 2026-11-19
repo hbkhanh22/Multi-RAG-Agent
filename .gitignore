@@ -21,3 +21,6 @@ notebooks/data/vectorstores/
 data/models/
 data/memory.db*
 data/mcp_workspace/
+
+# Copyrighted source documents (IFAB / FIFA / VFF): keep local, do not redistribute
+data/raw/sport/

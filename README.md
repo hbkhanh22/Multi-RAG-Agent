@@ -1,6 +1,6 @@
 # Hệ Thống Multi-RAG Agent (Multi-Agent Retrieval-Augmented Generation)
 
-> Hệ thống Multi-RAG Agent thông minh điều phối nhiều Agent chuyên biệt theo từng miền tri thức (*Finance*, *Tech*, *General*), kết hợp **LangGraph**, **Chroma Vector Store**, **Hybrid Retrieval (Vector + BM25)**, **Cross-Encoder Reranker**, và **LLMs (NVIDIA NIM)** để giải quyết các truy vấn phức tạp với độ chính xác và khả năng trích dẫn nguồn cao.
+> Hệ thống Multi-RAG Agent thông minh điều phối nhiều Agent chuyên biệt theo từng miền tri thức (*Sport*, *Tech*, *General*), kết hợp **LangGraph**, **Chroma Vector Store**, **Hybrid Retrieval (Vector + BM25)**, **Cross-Encoder Reranker**, và **LLMs (NVIDIA NIM)** để giải quyết các truy vấn phức tạp với độ chính xác và khả năng trích dẫn nguồn cao.
 
 ---
 
@@ -24,9 +24,33 @@
 
 ## 1. Tổng Quan Kiến Trúc (Architecture Overview)
 
-Hệ thống được thiết kế theo mô hình **Multi-Agent Directed Acyclic Graph (DAG)** xây dựng trên nền tảng **LangGraph**. Thay vì sử dụng một kho vector store đơn lẻ khổng lồ dễ gây nhiễu, hệ thống phân tách tri thức thành các miền độc lập (*Finance*, *Tech*, *General*).
+Hệ thống được thiết kế theo mô hình **Multi-Agent Directed Acyclic Graph (DAG)** xây dựng trên nền tảng **LangGraph**. Thay vì sử dụng một kho vector store đơn lẻ khổng lồ dễ gây nhiễu, hệ thống phân tách tri thức thành các miền độc lập (*Sport*, *Tech*, *General*).
 
-![Kiến trúc Multi-RAG Agent System](docs/images/architecture_overview.jpg)
+```mermaid
+flowchart LR
+    U(["👤 Người dùng"]) --> FE["React + Vite UI<br/>(SSE streaming, lịch sử chat)"]
+    FE -->|"POST /api/query/stream"| API["FastAPI<br/>api/routes.py"]
+    API --> MEM[("SQLite<br/>data/memory.db")]
+    API --> G
+
+    subgraph G["LangGraph workflow"]
+        direction TB
+        C["condense"] --> R["Router Agent"]
+        R --> A1["Sport / Tech / General<br/>RAG Agents"]
+        R --> A2["Web Agent"]
+        R --> A3["Tool Agent"]
+        R --> SV["Supervisor"]
+        R --> DC["Direct Chat"]
+        A1 & A2 & A3 & SV --> SY["Synthesizer"]
+    end
+
+    A1 --> VS[("ChromaDB + BM25<br/>sport / tech / general")]
+    A1 --> RR["Reranker<br/>bge-reranker-v2-m3"]
+    A2 --> DDG["DuckDuckGo"]
+    A3 --> MCP["MCP servers<br/>filesystem, fetch"]
+    G -.->|"gọi LLM"| NIM["NVIDIA NIM<br/>Nemotron"]
+    ING["Auto-ingest<br/>(luồng nền khi khởi động)"] --> VS
+```
 
 ---
 
@@ -34,7 +58,20 @@ Hệ thống được thiết kế theo mô hình **Multi-Agent Directed Acyclic
 
 Quy trình nạp tài liệu biến đổi dữ liệu thô (PDF, DOCX, TXT, Markdown) thành các vector embedding và lưu trữ vào ChromaDB theo từng domain.
 
-![Quy trình Ingestion Pipeline](docs/images/ingestion_pipeline.jpg)
+```mermaid
+flowchart TD
+    RAW["data/raw/sport · tech · general<br/>(.pdf .txt .md .docx)"] --> SCAN["Quét file khi server khởi động"]
+    SCAN --> CHK{"So với manifest<br/>(mtime, size)"}
+    CHK -->|"không đổi"| SKIP["Bỏ qua"]
+    CHK -->|"mới / đã sửa"| LOAD["Đọc file<br/>PyPDF · Text · Docx2txt"]
+    LOAD --> CHUNK["Chia chunk<br/>512 ký tự, overlap 64"]
+    CHUNK --> DEL["Xóa chunk cũ của file<br/>(nếu là bản sửa)"]
+    DEL --> EMB["Embedding bge-m3<br/>(1024 chiều, chuẩn hóa)"]
+    EMB --> STORE[("Chroma<br/>data/vectorstores/&lt;domain&gt;_store/bge-m3")]
+    EMB --> MAN["Cập nhật manifest"]
+    SCAN -->|"file đã bị xóa khỏi đĩa"| RM["Xóa chunk + mục manifest"]
+    RM --> STORE
+```
 
 ### Các bước xử lý trong Ingestion:
 1. **Quét tự động (Auto-Scan & Incremental Delta Check):** Khi khởi động server FastAPI (`lifespan`), `src/ingestion/auto_ingest.py` tự động quét các thư mục `data/raw/{domain}`.
@@ -45,7 +82,7 @@ Quy trình nạp tài liệu biến đổi dữ liệu thô (PDF, DOCX, TXT, Mar
    - `add_start_index = True`: Lưu vị trí index để phục vụ việc trích xuất toạ độ dữ liệu.
 4. **Vector Embedding:** Sử dụng mô hình `BAAI/bge-m3` (đa ngôn ngữ, dimension = 1024, vector chuẩn hóa) qua HuggingFace để mã hóa nội dung chunk thành vector không gian.
 5. **ChromaDB Multi-Collection:** Mỗi domain sở hữu một thư mục lưu trữ độc lập:
-   - Finance: `data/vectorstores/finance_store` (collection: `finance_collection`)
+   - Sport: `data/vectorstores/sport_store` (collection: `sport_collection`)
    - Tech: `data/vectorstores/tech_store` (collection: `tech_collection`)
    - General: `data/vectorstores/general_store` (collection: `general_collection`)
 
@@ -55,7 +92,26 @@ Quy trình nạp tài liệu biến đổi dữ liệu thô (PDF, DOCX, TXT, Mar
 
 Mỗi khi người dùng gửi một câu hỏi qua API `/api/query`, luồng xử lý diễn ra chi tiết qua các giai đoạn:
 
-![Luồng Hoạt Động Của Hệ Thống RAG](docs/images/rag_workflow.jpg)
+```mermaid
+flowchart TD
+    START(["Câu hỏi + conversation_id"]) --> HIS["Nạp lịch sử hội thoại<br/>(SQLite)"]
+    HIS --> CON{"condense:<br/>câu hỏi nối tiếp?"}
+    CON -->|"có"| RW["Viết lại thành câu độc lập<br/>(model nhỏ)"]
+    CON -->|"không"| RT
+    RW --> RT["router"]
+    RT -->|"direct_chat"| DC["direct_chat_agent"] --> END1(["Trả lời, stream token"])
+    RT -->|"sport"| SP["sport_agent"]
+    RT -->|"tech"| TE["tech_agent"]
+    RT -->|"general"| GE["general_agent"]
+    RT -->|"web"| WE["web_agent"]
+    RT -->|"tools"| TO["tool_agent"]
+    RT -->|"multi"| SV["supervisor<br/>(chạy song song)"]
+    SP & TE & GE & WE & TO & SV --> SY["synthesizer"]
+    SY --> SAVE["Lưu lượt hỏi đáp<br/>(chỉ khi thành công)"]
+    SAVE --> END2(["final: câu trả lời + nguồn + themes"])
+```
+
+Trong lúc chạy, server gửi các sự kiện SSE `stage` (understanding / routing / retrieving / synthesizing), `route`, `tool`, `token` và cuối cùng là `final` hoặc `error`.
 
 ---
 
@@ -63,7 +119,20 @@ Mỗi khi người dùng gửi một câu hỏi qua API `/api/query`, luồng x�
 
 ### 4.1. Router Agent & Direct Chat Routing
 
-![Router Agent Intent Classification](docs/images/router_decision.jpg)
+```mermaid
+flowchart TD
+    Q["Câu hỏi"] --> FAST{"Regex câu chào / cảm ơn /<br/>'bạn là ai' (≤ 60 ký tự)?"}
+    FAST -->|"khớp"| DC["direct_chat<br/>(không gọi LLM)"]
+    FAST -->|"không"| LLM["LLM nhỏ phân loại<br/>→ JSON"]
+    LLM --> PARSE{"Parse JSON<br/>(thẳng / trong khối code / trích đoạn JSON)"}
+    PARSE -->|"lỗi"| GEN["general (mặc định)"]
+    PARSE -->|"ok"| ROUTE{"route"}
+    ROUTE -->|"sport · tech · general · web"| ONE["1 agent"]
+    ROUTE -->|"tools"| MCPQ{"MCP đã kết nối?"}
+    MCPQ -->|"có"| TOOLS["tool_agent"]
+    MCPQ -->|"không"| WEB["đổi sang web"]
+    ROUTE -->|"multi"| MULTI["lọc domain hợp lệ<br/>≥ 2 → supervisor · 1 → agent đó"]
+```
 
 **Output JSON mẫu của Router:**
 ```json
@@ -71,7 +140,7 @@ Mỗi khi người dùng gửi một câu hỏi qua API `/api/query`, luồng x�
   "route": "tech",
   "primary_domain": "tech",
   "all_domains": ["tech"],
-  "domain_scores": {"tech": 0.95, "finance": 0.0, "general": 0.05, "direct_chat": 0.0},
+  "domain_scores": {"tech": 0.95, "sport": 0.0, "general": 0.05, "direct_chat": 0.0},
   "confidence": 0.95,
   "reasoning": "Câu hỏi hỏi về kiến trúc Microservices và REST API"
 }
@@ -79,12 +148,25 @@ Mỗi khi người dùng gửi một câu hỏi qua API `/api/query`, luồng x�
 
 ### 4.2. Cơ Chế Nội Bộ Của Pipeline RAG (Retrieval-Augmented Generation Pipeline)
 
-![Internal RAG Mechanics Pipeline](docs/images/rag_internal_mechanics.jpg)
+```mermaid
+flowchart TD
+    Q["Câu hỏi"] --> EXP["Multi-query expansion<br/>(gốc + 2 biến thể, model nhỏ)"]
+    EXP --> HY["Hybrid search mỗi biến thể<br/>vector k=10 + BM25 → weighted RRF"]
+    HY --> DD["Xen kẽ thứ hạng, khử trùng<br/>giữ tối đa 10 ứng viên"]
+    DD --> RR["Rerank bge-reranker-v2-m3<br/>lấy top 4"]
+    RR --> T1{"điểm ≥ 0.05?"}
+    T1 -->|"có"| GEN["Sinh câu trả lời<br/>kèm [Source N]"]
+    T1 -->|"không"| OD["Tìm ở 2 domain còn lại<br/>(không mở rộng câu hỏi)"]
+    OD --> T2{"rerank: điểm ≥ 0.05?"}
+    T2 -->|"có"| GEN
+    T2 -->|"không"| WEB["Tìm web (DuckDuckGo)"]
+    WEB --> GEN
+```
 
 Quy trình RAG bao gồm 4 giai đoạn nối tiếp nhau được tinh chỉnh để tối đa hoá độ chính xác:
 1. **Query Expansion (Mở rộng câu hỏi):**
    - **Multi-Query:** LLM sinh thêm 2 biến thể câu hỏi (mặc định chỉ bật Multi-Query) tiếp cận từ nhiều góc độ khác nhau.
-   - **Synonym Expansion (có sẵn, mặc định tắt để giảm số lần gọi LLM):** Bổ sung thuật ngữ đồng nghĩa theo chuyên ngành tài chính và công nghệ.
+   - **Synonym Expansion (có sẵn, mặc định tắt để giảm số lần gọi LLM):** Bổ sung thuật ngữ đồng nghĩa theo chuyên ngành thể thao và công nghệ.
    - **HyDE (Hypothetical Document Embeddings, có sẵn nhưng mặc định tắt):** LLM sinh một đoạn giả định chứa câu trả lời khả dĩ và dùng embedding của đoạn này để truy xuất tài liệu, giúp thu hẹp khoảng cách ngữ nghĩa giữa câu hỏi ngắn và đoạn văn bản dài.
 2. **Hybrid Retrieval & Deduplication (ChromaDB + BM25):**
    - **Hybrid Search:** Mỗi truy vấn chạy đồng thời *vector similarity* (k = 10) và *BM25*, rồi hợp nhất bằng *Weighted Reciprocal Rank Fusion* (`VECTOR_WEIGHT` / `BM25_WEIGHT`).
@@ -93,7 +175,7 @@ Quy trình RAG bao gồm 4 giai đoạn nối tiếp nhau được tinh chỉnh 
 3. **Cross-Encoder Re-ranking:**
    - Sử dụng mô hình `BAAI/bge-reranker-v2-m3` (đa ngôn ngữ, điểm sigmoid 0..1).
    - Tính toán điểm tương đồng ngữ nghĩa sâu (deep cross-attention) giữa câu hỏi và từng chunk.
-   - Lọc từ **20 chunks thô** xuống còn **Top 4 chunks tinh hoa nhất**, loại bỏ hoàn toàn các thông tin gây nhiễu.
+   - Lọc từ tối đa **10 ứng viên** (`RERANK_MAX_CANDIDATES`) xuống **Top 4** (`TOP_K_RERANK`), rồi bỏ các chunk dưới ngưỡng liên quan.
 4. **LLM Generation:**
    - Đưa câu hỏi kèm tối đa 4 chunks ngữ cảnh tinh chọn vào LLM để sinh câu trả lời kèm thẻ trích dẫn `[Source N]`.
 
@@ -103,7 +185,31 @@ Quy trình RAG bao gồm 4 giai đoạn nối tiếp nhau được tinh chỉnh 
 
 ### 4.3. Supervisor Agent & Synthesizer Agent (Phối Hợp Đa Miền & Tối Ưu Hóa)
 
-![Supervisor Agent & Synthesizer Agent Pipeline](docs/images/supervisor_synthesizer.jpg)
+```mermaid
+sequenceDiagram
+    participant R as Router
+    participant S as Supervisor
+    participant A as Agent A (vd: sport)
+    participant B as Agent B (vd: web)
+    participant Y as Synthesizer
+    participant L as LLM
+
+    R->>S: route = multi, agents = [sport, web]
+    par Thread pool
+        S->>A: run(query)
+        S->>B: run(query)
+    end
+    A-->>S: answer + [Source 1..n]
+    B-->>S: answer + [Source 1..m]
+    S->>Y: agent_responses
+    alt Chỉ 1 agent thành công
+        Y-->>R: trả nguyên câu trả lời (không gọi LLM)
+    else Từ 2 agent trở lên
+        Y->>Y: đánh lại số nguồn: B dùng [Source n+1..n+m]
+        Y->>L: 1 lần gọi → JSON {answer, themes}
+        L-->>Y: câu trả lời gộp + 3–5 key themes
+    end
+```
 
 #### Cơ Chế Hoạt Động Cụ Thể:
 - **Supervisor Agent (Thực thi song song đa miền):**
@@ -122,10 +228,10 @@ Quy trình RAG bao gồm 4 giai đoạn nối tiếp nhau được tinh chỉnh 
 Hệ thống tích hợp **Web Search Tool** (sử dụng thư viện `ddgs` - DuckDuckGo Search API) và **Web Scraper Tool** (sử dụng `httpx` + `BeautifulSoup`), mang lại khả năng xử lý các truy vấn nằm ngoài kho tài liệu nội bộ:
 
 #### 1. Cơ Chế Hoạt Động Của Web Agent:
-- **Định tuyến chủ động từ Router Agent:** Khi Router phát hiện câu hỏi mang tính chất thời sự, sự kiện mới diễn ra (vd: *"tin tức hôm nay"*, *"giá Bitcoin bây giờ"*), hoặc yêu cầu rõ ràng về tìm kiếm Internet, hệ thống sẽ chuyển ngay sang `web_agent_node`.
+- **Định tuyến chủ động từ Router Agent:** Khi Router phát hiện câu hỏi mang tính chất thời sự, sự kiện mới diễn ra (vd: *"tin tức hôm nay"*, *"kết quả trận đấu tối qua"*), hoặc yêu cầu rõ ràng về tìm kiếm Internet, hệ thống sẽ chuyển ngay sang `web_agent_node`.
 - **Cơ chế Fallback thông minh (2 cấp độ):**
-  1. *Cấp 1:* Nếu tài liệu không tìm thấy trong domain chính, thử tìm trên các domain nội bộ còn lại (`Finance`, `Tech`, `General`).
-  2. *Cấp 2:* Nếu cả 3 domain nội bộ đều không có dữ liệu phù hợp, hệ thống tự động kích hoạt `WebSearchTool` tìm kiếm trên Google/DuckDuckGo để bổ sung ngữ cảnh, triệt tiêu hoàn toàn hiện tượng ảo giác (hallucination).
+  1. *Cấp 1:* Nếu tài liệu không tìm thấy trong domain chính, thử tìm trên các domain nội bộ còn lại (`Sport`, `Tech`, `General`).
+  2. *Cấp 2:* Nếu cả 3 domain nội bộ đều không có dữ liệu phù hợp, hệ thống tự động kích hoạt `WebSearchTool` tìm kiếm trên DuckDuckGo để bổ sung ngữ cảnh, giảm nguy cơ mô hình tự bịa câu trả lời (hallucination).
 - **Trích dẫn nguồn trực tiếp:** Kết quả trả về kèm đầy đủ tiêu đề trang web, đường dẫn URL (`https://...`) và đoạn trích dẫn (snippet), cho phép người dùng nhấp trực tiếp vào liên kết trên giao diện người dùng.
 
 ---
@@ -143,12 +249,12 @@ multi-rag-agent/
 │   └── mcp_servers.json           # Khai báo MCP server (filesystem, fetch) + allow-list tool
 ├── data/                          # Dữ liệu
 │   ├── raw/                       # Thư mục chứa tài liệu gốc theo miền
-│   │   ├── finance/               # Báo cáo tài chính, tài liệu ngân hàng (.pdf, .txt, .docx)
+│   │   ├── sport/                 # Luật thi đấu, lịch sử giải đấu, chiến thuật, khoa học thể thao
 │   │   ├── tech/                  # Tài liệu kỹ thuật, kiến trúc phần mềm, AI/ML
 │   │   └── general/               # Tri thức tổng hợp khác
 │   └── vectorstores/              # Nơi lưu trữ cơ sở dữ liệu vector ChromaDB
 │       ├── .ingested_manifest.json# Manifest theo dõi trạng thái hash của tài liệu
-│       ├── finance_store/         # Chroma collection: finance
+│       ├── sport_store/           # Chroma collection: sport
 │       ├── tech_store/            # Chroma collection: tech
 │       └── general_store/         # Chroma collection: general
 ├── frontend/                      # Ứng dụng giao diện người dùng React + Vite
@@ -241,7 +347,7 @@ NVIDIA_API_KEY=nvapi-your-key-here
 
 ### Bước 3: Thêm tài liệu vào kho dữ liệu
 Đặt các tài liệu cần tra cứu vào thư mục thích hợp:
-- Tài chính: `data/raw/finance/` (ví dụ: báo cáo thường niên, phân tích tài chính)
+- Thể thao: `data/raw/sport/` (ví dụ: luật thi đấu, lịch sử giải đấu, tài liệu chiến thuật, huấn luyện)
 - Công nghệ: `data/raw/tech/` (ví dụ: whitepaper, tài liệu kiến trúc hệ thống, API docs)
 - Tổng hợp: `data/raw/general/` (ví dụ: nội quy, chính sách, kiến thức chung)
 
@@ -356,7 +462,7 @@ Xem trước Router Agent sẽ phân loại câu hỏi vào domain nào:
 ```bash
 curl -X POST "http://localhost:8000/api/route" \
   -H "Content-Type: application/json" \
-  -d '{"query": "Tình hình lạm phát và lãi suất ảnh hưởng thế nào tới trái phiếu?"}'
+  -d '{"query": "Luật việt vị trong bóng đá được áp dụng thế nào?"}'
 ```
 
 ### 3. Kiểm tra trạng thái hệ thống (`GET /api/health` & `GET /api/stats`)
@@ -386,7 +492,7 @@ Bạn cũng có thể gọi trực tiếp hệ thống trong mã nguồn Python 
 ```python
 from src.graph import run_workflow
 
-query = "Tổng quan về báo cáo tài chính quý gần nhất của công ty?"
+query = "Lịch sử và thể thức thi đấu của FIFA World Cup?"
 result = run_workflow(query, debug=True)
 
 print("=== CÂU TRẢ LỜI CUỐI CÙNG ===")
@@ -430,7 +536,7 @@ for source in result["sources"]:
 | Fallback 3 tầng (domain chính → domain khác → web) | ✅ Hoàn thành | |
 | Query expansion | 🟡 Một phần | Multi-query bật; HyDE, synonyms, domain-specific có code nhưng tắt |
 | Router (regex fast path + LLM JSON) | ✅ Hoàn thành | Route `tools` chỉ xuất hiện khi MCP đã kết nối |
-| RAG agent theo domain (Finance / Tech / General) | 🟡 Một phần | Code xong; **chỉ `data/raw/tech` có tài liệu** (3 PDF), Finance và General đang trống |
+| RAG agent theo domain (Sport / Tech / General) | 🟡 Một phần | Code xong; **chỉ `data/raw/tech` có tài liệu** (3 PDF), Sport và General đang trống |
 | Web Agent (DuckDuckGo) | ✅ Hoàn thành | `WebScraperTool` có sẵn nhưng Web Agent chưa dùng |
 | Supervisor (song song) + Synthesizer (đánh số nguồn toàn cục) | ✅ Hoàn thành | |
 | Tool Agent qua MCP | ✅ Hoàn thành | Chỉ đọc; chặn SSRF; tối đa 5 vòng |
@@ -440,7 +546,7 @@ for source in result["sources"]:
 
 ### Việc còn tồn đọng / đề xuất tiếp theo
 
-- **Dữ liệu:** bổ sung tài liệu cho `data/raw/finance` và `data/raw/general`; hiện câu hỏi tài chính sẽ rơi xuống fallback web.
+- **Dữ liệu:** bổ sung tài liệu cho `data/raw/sport` và `data/raw/general`; hiện câu hỏi thể thao sẽ rơi xuống fallback web.
 - **Code chưa nối vào hệ thống:** `src/tools/calculator_tool.py`, `src/tools/search_tools.py`, `DocumentLoader`, `VectorStoreBuilder`, `CacheManager`, `POWERFUL_LLM_MODEL` (có thể nối thành tool cho agent hoặc xóa bớt).
 - **Route đa miền:** Supervisor chưa truyền lịch sử hội thoại cho các agent con (chỉ dùng câu hỏi đã viết lại) và không stream token trước bước tổng hợp.
 - **API:** trường `domain` trong `QueryRequest` chưa được dùng; `/api/stats` trả `uptime = 0` và danh sách agent chưa có `tools`.

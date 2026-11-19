@@ -18,7 +18,7 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-ALL_DOMAINS = ["finance", "tech", "general"]
+ALL_DOMAINS = ["sport", "tech", "general"]
 MAX_CONTEXT_CHARS = 1500
 
 ScoredDoc = Tuple[Document, float]

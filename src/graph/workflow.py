@@ -13,7 +13,7 @@ from .state import AgentState
 from .nodes import (
     condense_node,
     router_node,
-    finance_rag_node,
+    sport_rag_node,
     tech_rag_node,
     general_rag_node,
     web_agent_node,
@@ -33,7 +33,7 @@ def build_agent_graph():
 
     graph.add_node("condense", condense_node)
     graph.add_node("router", router_node)
-    graph.add_node("finance_agent", finance_rag_node)
+    graph.add_node("sport_agent", sport_rag_node)
     graph.add_node("tech_agent", tech_rag_node)
     graph.add_node("general_agent", general_rag_node)
     graph.add_node("web_agent", web_agent_node)
@@ -50,7 +50,7 @@ def build_agent_graph():
         route_after_router,
         {
             "supervisor": "supervisor",
-            "finance_agent": "finance_agent",
+            "sport_agent": "sport_agent",
             "tech_agent": "tech_agent",
             "general_agent": "general_agent",
             "web_agent": "web_agent",
@@ -59,7 +59,7 @@ def build_agent_graph():
         },
     )
 
-    for node in ("finance_agent", "tech_agent", "general_agent", "web_agent", "tool_agent", "supervisor"):
+    for node in ("sport_agent", "tech_agent", "general_agent", "web_agent", "tool_agent", "supervisor"):
         graph.add_edge(node, "synthesizer")
 
     graph.add_edge("direct_chat_agent", END)

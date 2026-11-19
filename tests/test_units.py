@@ -8,7 +8,7 @@ import pytest
 def router(modules):
     from src.agents.router_agent import RouterAgent
     r = RouterAgent.__new__(RouterAgent)  # parsing needs no LLM; skip __init__
-    r.domains = ["finance", "tech", "general", "web"]
+    r.domains = ["sport", "tech", "general", "web"]
     return r
 
 
@@ -23,8 +23,8 @@ def test_router_parses_plain_json(router):
 
 def test_router_parses_fenced_json(router):
     """Regression: missing `import re` made fenced JSON fall back to 'general'."""
-    raw = '```json\n{"route": "finance", "confidence": 0.8}\n```'
-    assert parse(router, raw)["route"] == "finance"
+    raw = '```json\n{"route": "sport", "confidence": 0.8}\n```'
+    assert parse(router, raw)["route"] == "sport"
 
 
 def test_router_parses_json_with_prose(router):
@@ -38,8 +38,8 @@ def test_router_multi_filters_invalid_agents(router):
 
 
 def test_router_multi_with_single_domain_collapses(router):
-    r = parse(router, json.dumps({"route": "multi", "all_domains": ["finance", "direct_chat"]}))
-    assert r["route"] == "finance" and r["agents"] == ["finance"]
+    r = parse(router, json.dumps({"route": "multi", "all_domains": ["sport", "direct_chat"]}))
+    assert r["route"] == "sport" and r["agents"] == ["sport"]
 
 
 def test_router_unknown_route_defaults_general(router):
@@ -53,7 +53,7 @@ def test_router_garbage_defaults_general(router):
 @pytest.mark.parametrize("route,agents,expected", [
     ("direct_chat", ["direct_chat"], "direct_chat_agent"),
     ("multi", ["tech", "web"], "supervisor"),
-    ("finance", ["finance"], "finance_agent"),
+    ("sport", ["sport"], "sport_agent"),
     ("tech", ["tech"], "tech_agent"),
     ("web", ["web"], "web_agent"),
     ("general", ["general"], "general_agent"),

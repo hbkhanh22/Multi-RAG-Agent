@@ -16,8 +16,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 _PATH_FIELDS = (
     "data_dir",
-    "finance_data_path", "tech_data_path", "general_data_path",
-    "finance_store_path", "tech_store_path", "general_store_path",
+    "sport_data_path", "tech_data_path", "general_data_path",
+    "sport_store_path", "tech_store_path", "general_store_path",
     "log_dir", "memory_db_path", "mcp_config_path", "mcp_workspace_dir",
 )
 
@@ -84,10 +84,10 @@ class Settings(BaseSettings):
 
     # ============= Paths =============
     data_dir: Path = Path("data")
-    finance_data_path: Path = Path("data/raw/finance")
+    sport_data_path: Path = Path("data/raw/sport")
     tech_data_path: Path = Path("data/raw/tech")
     general_data_path: Path = Path("data/raw/general")
-    finance_store_path: Path = Path("data/vectorstores/finance_store")
+    sport_store_path: Path = Path("data/vectorstores/sport_store")
     tech_store_path: Path = Path("data/vectorstores/tech_store")
     general_store_path: Path = Path("data/vectorstores/general_store")
     log_dir: Path = Path("logs")
@@ -146,8 +146,8 @@ settings = Settings()
 # Ensure required directories exist
 for _p in (
     settings.data_dir,
-    settings.finance_data_path, settings.tech_data_path, settings.general_data_path,
-    settings.finance_store_path, settings.tech_store_path, settings.general_store_path,
+    settings.sport_data_path, settings.tech_data_path, settings.general_data_path,
+    settings.sport_store_path, settings.tech_store_path, settings.general_store_path,
     settings.log_dir,
 ):
     _p.mkdir(parents=True, exist_ok=True)

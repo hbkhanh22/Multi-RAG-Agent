@@ -73,7 +73,7 @@ class KnowledgeBaseTool(SearchTool):
         Args:
             query: Search query
             limit: Maximum number of results
-            domain: Optional domain filter (finance, tech, general)
+            domain: Optional domain filter (sport, tech, general)
         
         Returns:
             List of search results
@@ -86,7 +86,7 @@ class KnowledgeBaseTool(SearchTool):
             results = []
             
             # Search specified domain or all domains
-            domains_to_search = [domain] if domain else ["finance", "tech", "general"]
+            domains_to_search = [domain] if domain else ["sport", "tech", "general"]
             
             for search_domain in domains_to_search:
                 docs = self.vector_store_manager.search(
@@ -111,16 +111,16 @@ class KnowledgeBaseTool(SearchTool):
             return []
 
 
-class FinanceSearchTool(SearchTool):
-    """Specialized finance search tool"""
+class SportSearchTool(SearchTool):
+    """Specialized sport search tool"""
     
     def __init__(self):
-        super().__init__("FinanceSearch")
+        super().__init__("SportSearch")
         self.kb_tool = KnowledgeBaseTool()
     
     def search(self, query: str, limit: int = 5) -> List[Dict]:
-        """Search finance knowledge base"""
-        return self.kb_tool.search(query, limit, domain="finance")
+        """Search sport knowledge base"""
+        return self.kb_tool.search(query, limit, domain="sport")
 
 
 class TechSearchTool(SearchTool):
@@ -151,7 +151,7 @@ class GeneralSearchTool(SearchTool):
 AVAILABLE_TOOLS = {
     "web_search": WebSearchTool,
     "knowledge_base": KnowledgeBaseTool,
-    "finance_search": FinanceSearchTool,
+    "sport_search": SportSearchTool,
     "tech_search": TechSearchTool,
     "general_search": GeneralSearchTool,
 }
