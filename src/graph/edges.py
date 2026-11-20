@@ -49,13 +49,15 @@ def route_to_end(state: AgentState) -> Literal["__end__"]:
     return "__end__"
 
 
-def should_continue(state: AgentState) -> Literal["router", "__end__"]:
-    """Determine if we should continue or end"""
-    iteration = state.get("iteration", 0)
-    max_iterations = state.get("max_iterations", 1)
-
-    if iteration >= max_iterations:
-        logger.info("Max iterations reached, ending")
+def route_after_evaluation(state: AgentState) -> Literal["refine", "__end__"]:
+    """Revise the answer when the judge failed it and refine rounds remain."""
+    verdict = state.get("evaluation") or {}
+    if verdict.get("passed") is not False:  # passed, or not evaluated
         return "__end__"
 
-    return "router"
+    if state.get("iteration", 0) >= state.get("max_iterations", 0):
+        logger.info("Answer still below threshold but no refine rounds left, ending")
+        return "__end__"
+
+    logger.info(f"Answer failed {verdict.get('failed_criteria')}, refining")
+    return "refine"

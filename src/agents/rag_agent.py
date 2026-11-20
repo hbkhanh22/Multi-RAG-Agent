@@ -53,6 +53,7 @@ class RAGAgent(BaseAgent):
                 "success": True,
                 "answer": answer,
                 "sources": citations,
+                "contexts": self._contexts(documents),
                 "domain": self.domain,
                 "fallback": fallback,
                 "retrieved_count": retrieved_count,
@@ -226,6 +227,21 @@ Please provide a comprehensive answer with citations:"""
             source = doc.metadata.get("title") or doc.metadata.get("filename") or doc.metadata.get("source", "Unknown")
             context += f"\n[Source {i}] {source}\n{doc.page_content[:MAX_CONTEXT_CHARS]}\n"
         return context
+
+    @staticmethod
+    def _contexts(documents: List[Document]) -> List[Dict]:
+        """Every chunk shown to the LLM, numbered as in the prompt (for evaluation)."""
+        return [
+            {
+                "source_id": i,
+                "source": doc.metadata.get("source", "Unknown"),
+                "title": doc.metadata.get("title") or doc.metadata.get("filename"),
+                "page": doc.metadata.get("page"),
+                "url": doc.metadata.get("url"),
+                "text": doc.page_content[:MAX_CONTEXT_CHARS],
+            }
+            for i, doc in enumerate(documents, 1)
+        ]
 
     def _extract_citations(self, documents: List[Document], answer: str) -> List[Dict]:
         """Citations for the [Source N] markers actually used in the answer"""

@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     # Cross-encoder cost grows linearly with candidates (CPU: ~0.7s each) => cap them.
     rerank_max_candidates: int = 10
 
+
     # Hybrid retrieval fusion weights (vector vs BM25)
     vector_weight: float = 0.6
     bm25_weight: float = 0.4
@@ -105,6 +106,24 @@ class Settings(BaseSettings):
     memory_db_path: Path = Path("data/memory.db")
     memory_max_turns: int = 6        # most recent user+assistant pairs sent to the model
     memory_max_chars: int = 4000     # character budget for that history
+
+    # ============= Evaluation / self-correction =============
+    # After synthesis an LLM judge scores the answer against the retrieved context
+    # (faithfulness, relevance, completeness: 1-5). If any score is below the
+    # threshold, the judge's feedback is sent back to the LLM to revise the answer.
+    self_eval_enabled: bool = True
+    judge_llm_model: str = ""          # empty => default_llm_model
+    judge_max_tokens: int = 600
+    self_eval_min_score: int = 4       # a score below this fails the answer (3 let hallucinated numbers pass)
+    self_eval_max_rounds: int = 1      # revise-and-recheck rounds (0 = judge only)
+    judge_max_context_chars: int = 9000
+
+    # Offline RAGAS metrics (python -m src.evaluation.run --ragas). Called through
+    # NIM's OpenAI-compatible endpoint.
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    ragas_llm_model: str = ""          # empty => judge_llm_model or default_llm_model
+    ragas_max_tokens: int = 4096       # claim lists can be long; truncated JSON = failed metric
+    ragas_concurrency: int = 2         # parallel LLM calls (NIM free tier ~40 requests/min; 4 hit 429s)
 
     # ============= Documents =============
     supported_file_types: List[str] = [".pdf", ".txt", ".md", ".docx"]

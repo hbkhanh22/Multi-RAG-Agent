@@ -15,7 +15,7 @@ from .edges import (
     route_after_router,
     route_to_synthesizer,
     route_to_end,
-    should_continue
+    route_after_evaluation
 )
 from .workflow import build_agent_graph, create_initial_state, run_workflow, stream_workflow, app
 
@@ -34,7 +34,7 @@ __all__ = [
     "route_after_router",
     "route_to_synthesizer",
     "route_to_end",
-    "should_continue",
+    "route_after_evaluation",
     "build_agent_graph",
     "create_initial_state",
     "run_workflow",

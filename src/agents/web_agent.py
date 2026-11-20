@@ -87,6 +87,7 @@ class WebAgent(BaseAgent):
                 "success": True,
                 "answer": answer,
                 "sources": citations,
+                "contexts": [{**c, "text": f"{c['title']}: {c['snippet']}"} for c in citations],
                 "domain": self.domain,
                 "retrieved_count": len(search_results),
                 "reranked_count": len(search_results),

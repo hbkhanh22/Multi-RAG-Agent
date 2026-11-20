@@ -13,6 +13,7 @@
    - [Cơ Chế Nội Bộ Pipeline RAG (Expansion, Retrieval, Reranking)](#42-cơ-chế-nội-bộ-của-pipeline-rag-retrieval-augmented-generation-pipeline)
    - [Supervisor Agent & Synthesizer Agent (Đa tác tử & Tối ưu hóa)](#43-supervisor-agent--synthesizer-agent-phối-hợp-đa-miền--tối-ưu-hóa)
    - [Web Search Tool & Live Internet Agent (Thông tin thời gian thực)](#44-web-search-tool--live-internet-agent-thông-tin-thời-gian-thực)
+   - [Đánh Giá Chất Lượng & Vòng Lặp Tự Sửa](#45-đánh-giá-chất-lượng--vòng-lặp-tự-sửa-evaluation--self-correction)
 5. [Cấu Trúc Thư Mục Dự Án](#5-cấu-trúc-thư-mục-dự-án)
 6. [Cấu Hình Hệ Thống (Configuration)](#6-cấu-hình-hệ-thống-configuration)
 7. [Hướng Dẫn Cài Đặt & Khởi Chạy](#7-hướng-dẫn-cài-đặt--khởi-chạy)
@@ -107,11 +108,14 @@ flowchart TD
     RT -->|"tools"| TO["tool_agent"]
     RT -->|"multi"| SV["supervisor<br/>(chạy song song)"]
     SP & TE & GE & WE & TO & SV --> SY["synthesizer"]
-    SY --> SAVE["Lưu lượt hỏi đáp<br/>(chỉ khi thành công)"]
-    SAVE --> END2(["final: câu trả lời + nguồn + themes"])
+    SY --> EV{"evaluator<br/>(LLM judge)"}
+    EV -->|"chưa đạt, còn lượt"| RF["refine<br/>(gửi nhận xét cho LLM)"]
+    RF --> EV
+    EV -->|"đạt / hết lượt / không có context"| SAVE["Lưu lượt hỏi đáp<br/>(chỉ khi thành công)"]
+    SAVE --> END2(["final: câu trả lời + nguồn + themes + evaluation"])
 ```
 
-Trong lúc chạy, server gửi các sự kiện SSE `stage` (understanding / routing / retrieving / synthesizing), `route`, `tool`, `token` và cuối cùng là `final` hoặc `error`.
+Trong lúc chạy, server gửi các sự kiện SSE `stage` (understanding / routing / retrieving / synthesizing / evaluating / refining), `route`, `tool`, `token`, `evaluation`, `reset` (bỏ bản nháp đã stream trước khi stream bản đã sửa) và cuối cùng là `final` hoặc `error`.
 
 ---
 
@@ -234,6 +238,62 @@ Hệ thống tích hợp **Web Search Tool** (sử dụng thư viện `ddgs` - D
   2. *Cấp 2:* Nếu cả 3 domain nội bộ đều không có dữ liệu phù hợp, hệ thống tự động kích hoạt `WebSearchTool` tìm kiếm trên DuckDuckGo để bổ sung ngữ cảnh, giảm nguy cơ mô hình tự bịa câu trả lời (hallucination).
 - **Trích dẫn nguồn trực tiếp:** Kết quả trả về kèm đầy đủ tiêu đề trang web, đường dẫn URL (`https://...`) và đoạn trích dẫn (snippet), cho phép người dùng nhấp trực tiếp vào liên kết trên giao diện người dùng.
 
+### 4.5. Đánh Giá Chất Lượng & Vòng Lặp Tự Sửa (Evaluation & Self-Correction)
+
+Hệ thống đánh giá ở hai tầng:
+
+**a) Online, trong mỗi request (LLM-as-judge + reflection):**
+
+1. Các agent trả về `contexts`: toàn bộ chunk đã đưa cho LLM, đánh số giống các thẻ `[Source N]` trong câu trả lời. Khi gộp nhiều agent, Synthesizer đánh lại số cho khớp.
+2. `evaluator` (`AnswerJudge`) chấm câu trả lời theo thang 1-5:
+   - **faithfulness**: mọi khẳng định đều có trong context, trích dẫn đúng nguồn.
+   - **relevance**: trả lời đúng câu hỏi.
+   - **completeness**: dùng hết thông tin hữu ích có trong context.
+
+   Judge cũng trả về danh sách lỗi cụ thể và hướng sửa.
+3. Nếu có tiêu chí dưới `SELF_EVAL_MIN_SCORE`, `refine` (`AnswerRefiner`) gửi cho LLM: câu hỏi, context, câu trả lời cũ, điểm và nhận xét. LLM viết lại câu trả lời, sau đó câu trả lời mới được chấm lại. Tối đa `SELF_EVAL_MAX_ROUNDS` vòng.
+4. Bỏ qua khi không có context để đối chiếu (Tool Agent, chat thường). Nếu judge lỗi hoặc trả về JSON hỏng, câu trả lời vẫn được giữ nguyên, không bao giờ bị chặn.
+5. API trả về trường `evaluation` (điểm, lỗi, số vòng sửa, lịch sử từng vòng). UI hiển thị badge "Chất lượng x/5".
+
+Chi phí: thêm 1 lệnh gọi LLM cho mỗi câu hỏi có tài liệu, và thêm 2 lệnh gọi nếu phải sửa.
+
+**b) Offline, trên bộ câu hỏi chuẩn (`evals/datasets/*.jsonl`):**
+
+```bash
+python -m src.evaluation.run --dataset evals/datasets/sport.jsonl evals/datasets/tech.jsonl
+python -m src.evaluation.run --dataset evals/datasets/sport.jsonl --no-refine     # baseline: chỉ chấm, không sửa
+python -m src.evaluation.run --only sport-gk-8s sport-subs                         # chạy vài câu
+python -m src.evaluation.run --dataset evals/datasets/*.jsonl --ragas              # thêm độ đo RAGAS
+python -m src.evaluation.run --rescore evals/results/<lần chạy>.json               # chấm RAGAS lại kết quả cũ, không chạy pipeline
+```
+
+Mỗi câu hỏi có đáp án mẫu (`reference`) và nguồn và trang cần truy xuất (`evidence`). Script đo các nhóm chỉ số sau:
+
+- **Định tuyến:** route accuracy.
+- **Truy xuất:** hit rate, MRR, precision của các chunk được đưa cho LLM.
+- **Câu trả lời:** faithfulness, relevance, completeness và **correctness so với đáp án mẫu**.
+- **Vòng tự sửa:** điểm của bản nháp đầu so với điểm sau khi sửa.
+- **Độ trễ.**
+
+Kết quả lưu ở `evals/results/<thời điểm>.json` và `.md`, thư mục này được gitignore.
+
+**c) Độ đo RAGAS (`--ragas`, [src/evaluation/ragas_eval.py](src/evaluation/ragas_eval.py)):**
+
+Khác với judge thang 1-5, RAGAS tách câu trả lời thành từng khẳng định nhỏ rồi kiểm tra riêng từng cái. Điểm từ 0 đến 1, so sánh được với các benchmark RAG đã công bố.
+
+| Độ đo | Ý nghĩa | Cần đáp án mẫu |
+| :-- | :-- | :-- |
+| `faithfulness` | Tỷ lệ khẳng định trong câu trả lời được context hỗ trợ | Không |
+| `answer_relevancy` | Sinh lại câu hỏi từ câu trả lời, rồi so độ tương đồng với câu hỏi gốc (dùng LLM và embedding) | Không |
+| `context_precision` | Các chunk hữu ích có được xếp hạng đầu không | Có |
+| `context_recall` | Tỷ lệ ý trong đáp án mẫu tìm thấy trong context | Có |
+| `factual_correctness` | F1 theo từng khẳng định giữa câu trả lời và đáp án mẫu | Có |
+
+- LLM được gọi qua endpoint tương thích OpenAI của NVIDIA NIM.
+- Embedding dùng lại `bge-m3` đã nạp sẵn, không tải thêm bản thứ hai.
+- Telemetry của ragas bị tắt (`RAGAS_DO_NOT_TRACK=true`).
+- Mỗi câu hỏi tốn khoảng 10 lệnh gọi LLM, chạy song song theo `RAGAS_CONCURRENCY`.
+
 ---
 
 ## 5. Cấu Trúc Thư Mục Dự Án
@@ -283,10 +343,16 @@ multi-rag-agent/
 │   │   ├── vector_store.py        # VectorStoreManager: 3 collection Chroma, vector/BM25/hybrid search
 │   │   ├── reranker.py            # Cross-Encoder Reranker
 │   │   └── query_expansion.py     # Kỹ thuật HyDE & Multi-Query Expansion
+│   ├── evaluation/                # Đánh giá chất lượng
+│   │   ├── judge.py               # AnswerJudge (LLM-as-judge) + AnswerRefiner (tự sửa theo nhận xét)
+│   │   ├── metrics.py             # hit rate / MRR / precision truy xuất, tổng hợp kết quả
+│   │   ├── ragas_eval.py          # Độ đo RAGAS (faithfulness, answer relevancy, context precision/recall, factual correctness)
+│   │   └── run.py                 # CLI chạy eval offline: python -m src.evaluation.run
 │   ├── mcp_client/manager.py      # MCPManager: kết nối stdio, allow-list, chặn SSRF, timeout
 │   ├── memory/                    # Bộ nhớ hội thoại SQLite + viết lại câu hỏi nối tiếp
 │   ├── tools/                     # WebSearchTool, WebScraperTool (calculator/search_tools chưa nối vào graph)
 │   └── utils/                     # Công cụ ghi log và bộ đo thời gian (Timer)
+├── evals/datasets/                # Bộ câu hỏi chuẩn (JSONL): câu hỏi, đáp án mẫu, nguồn + trang cần truy xuất
 ├── tests/                         # pytest (LLM giả, kho vector + reranker thật)
 ├── requirements.txt               # Thư viện phụ thuộc Python
 └── README.md                      # Tài liệu hướng dẫn dự án
@@ -314,6 +380,12 @@ Mọi cấu hình được tập trung tại file [config/settings.py](file:///e
 | `USE_RERANKER` | `True` | Bật/tắt tầng Reranking trong pipeline |
 | `VECTOR_WEIGHT` / `BM25_WEIGHT` | `0.6` / `0.4` | Trọng số hợp nhất vector và BM25 |
 | `RELEVANCE_THRESHOLD` | `0.05` | Điểm rerank (0..1) tối thiểu để một chunk được coi là liên quan |
+| `SELF_EVAL_ENABLED` | `True` | Bật LLM judge chấm câu trả lời sau bước tổng hợp |
+| `JUDGE_LLM_MODEL` | `""` (= `DEFAULT_LLM_MODEL`) | Model dùng làm giám khảo |
+| `SELF_EVAL_MIN_SCORE` | `4` | Tiêu chí nào có điểm (1-5) thấp hơn ngưỡng này thì câu trả lời bị coi là chưa đạt |
+| `SELF_EVAL_MAX_ROUNDS` | `1` | Số vòng sửa tối đa (0 = chỉ chấm, không sửa) |
+| `RAGAS_LLM_MODEL` | `""` (= judge / default) | Model dùng để chấm RAGAS offline |
+| `RAGAS_CONCURRENCY` | `2` | Số lệnh gọi LLM song song khi chấm RAGAS (gói NIM miễn phí khoảng 40 request/phút) |
 | `CORS_ORIGINS` | `localhost:5173,...` | Danh sách origin được phép (phân tách bằng dấu phẩy) |
 
 ---
@@ -483,6 +555,8 @@ python -m pytest -q
 ```
 Test dùng LLM giả nhưng kho vector, embedding và reranker thật (cần đã nạp `data/raw/tech`).
 
+Đánh giá chất lượng với LLM thật (xem mục 4.5): `python -m src.evaluation.run`.
+
 ---
 
 ## 9. Khởi Chạy Trực Tiếp Qua Python Script
@@ -510,7 +584,7 @@ for source in result["sources"]:
 
 ## 10. Tiến Độ Dự Án
 
-> Cập nhật: 18/11/2026 · Đánh giá từ mã nguồn tại commit `950f876` · Test: **82/82 passed** (`python -m pytest -q`, ~2 phút 13 giây)
+> Cập nhật: 19/11/2026 · Test: **95/95 passed** (`python -m pytest -q`, ~2 phút 30 giây)
 
 ### Các mốc đã hoàn thành (theo lịch sử commit)
 
@@ -536,19 +610,22 @@ for source in result["sources"]:
 | Fallback 3 tầng (domain chính → domain khác → web) | ✅ Hoàn thành | |
 | Query expansion | 🟡 Một phần | Multi-query bật; HyDE, synonyms, domain-specific có code nhưng tắt |
 | Router (regex fast path + LLM JSON) | ✅ Hoàn thành | Route `tools` chỉ xuất hiện khi MCP đã kết nối |
-| RAG agent theo domain (Sport / Tech / General) | 🟡 Một phần | Code xong; **chỉ `data/raw/tech` có tài liệu** (3 PDF), Sport và General đang trống |
+| RAG agent theo domain (Sport / Tech / General) | 🟡 Một phần | Tech: 3 PDF (630 chunk); Sport: 4 PDF luật bóng đá, FIFA, VFF (880 chunk, không đưa lên git); General đang trống |
 | Web Agent (DuckDuckGo) | ✅ Hoàn thành | `WebScraperTool` có sẵn nhưng Web Agent chưa dùng |
 | Supervisor (song song) + Synthesizer (đánh số nguồn toàn cục) | ✅ Hoàn thành | |
 | Tool Agent qua MCP | ✅ Hoàn thành | Chỉ đọc; chặn SSRF; tối đa 5 vòng |
 | Bộ nhớ hội thoại | ✅ Hoàn thành | Chưa có xác thực người dùng |
 | Streaming SSE + React UI | ✅ Hoàn thành | Theme sáng/tối, lịch sử hội thoại, trạng thái API |
-| Kiểm thử tự động | ✅ 82 test | API, workflow, MCP, memory, đa ngôn ngữ, unit |
+| Kiểm thử tự động | ✅ 95 test | API, workflow, MCP, memory, đa ngôn ngữ, evaluation, unit |
+| Đánh giá chất lượng (LLM judge + tự sửa + eval offline) | ✅ Hoàn thành | 17 câu chuẩn (13 sport, 4 tech). Lần chạy 19/11/2026: route 100%, retrieval hit 94% / MRR 0.88, faithfulness 4.71/5, correctness 4.87/5, độ trễ trung bình ~14s |
 
 ### Việc còn tồn đọng / đề xuất tiếp theo
 
-- **Dữ liệu:** bổ sung tài liệu cho `data/raw/sport` và `data/raw/general`; hiện câu hỏi thể thao sẽ rơi xuống fallback web.
+- **Dữ liệu:** bổ sung tài liệu cho `data/raw/general`; mở rộng bộ eval (hiện 17 câu).
+- **Truy xuất đa ngôn ngữ:** câu hỏi tiếng Việt về việt vị lấy tài liệu tiếng Việt (VFF, ĐH Duy Tân) thay vì Luật 11 gốc của IFAB (eval `sport-offside-position`: miss).
+- **Judge:** điểm của LLM judge dao động giữa các lần chạy; nên dùng model judge mạnh hơn hoặc chấm nhiều lần lấy trung bình cho eval offline.
 - **Code chưa nối vào hệ thống:** `src/tools/calculator_tool.py`, `src/tools/search_tools.py`, `DocumentLoader`, `VectorStoreBuilder`, `CacheManager`, `POWERFUL_LLM_MODEL` (có thể nối thành tool cho agent hoặc xóa bớt).
 - **Route đa miền:** Supervisor chưa truyền lịch sử hội thoại cho các agent con (chỉ dùng câu hỏi đã viết lại) và không stream token trước bước tổng hợp.
 - **API:** trường `domain` trong `QueryRequest` chưa được dùng; `/api/stats` trả `uptime = 0` và danh sách agent chưa có `tools`.
 - **Bảo mật / vận hành:** chưa có xác thực, ai có `conversation_id` đều đọc được hội thoại; cấu hình MCP chỉ nạp lúc khởi động.
-- **Chưa có:** upload tài liệu qua API/UI, đánh giá chất lượng RAG (bộ câu hỏi chuẩn, đo độ chính xác), Docker/CI.
+- **Chưa có:** upload tài liệu qua API/UI, Docker/CI, tracing (Langfuse/LangSmith).

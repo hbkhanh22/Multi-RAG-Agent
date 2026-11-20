@@ -7,7 +7,7 @@ operator.add) and duplicate data.
 """
 
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
@@ -18,6 +18,7 @@ from src.graph.state import AgentState
 from src.utils import Timer
 from src.memory import condense_prompt, format_history, history_to_messages, needs_condense
 from src.agents.router_agent import fast_route
+from src.evaluation.judge import AnswerJudge, AnswerRefiner
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,8 @@ rag_agents = {
 tool_agent = ToolAgent()
 supervisor_agent = SupervisorAgent(agents={**rag_agents, "web": web_agent, "tools": tool_agent})
 chat_agent = ChatAgent()
+judge_agent = AnswerJudge()
+refiner_agent = AnswerRefiner()
 
 
 def _q(state: AgentState) -> str:
@@ -190,9 +193,81 @@ def synthesizer_node(state: AgentState) -> Dict[str, Any]:
         "final_answer": final_answer,
         "key_themes": result.get("key_themes", []),
         "sources": result.get("sources", []),
+        "contexts": result.get("contexts", []),
         "retrieval_stats": result.get("retrieval_stats", {}),
         "status": "complete" if result.get("success") else "error",
         "messages": [AIMessage(content=final_answer)],
+    }
+
+
+def evaluator_node(state: AgentState) -> Dict[str, Any]:
+    """LLM-as-judge: score the answer against the context it was built from."""
+    if not settings.self_eval_enabled or state.get("status") != "complete":
+        return {}
+    contexts = state.get("contexts") or []
+    answer = state.get("final_answer") or ""
+    if not answer or not contexts:
+        # Nothing to check faithfulness against (tool answers, no documents found)
+        return {}
+
+    logger.info("=== EVALUATOR NODE ===")
+    emit({"type": "stage", "stage": "evaluating"})
+    with Timer("Evaluator"):
+        verdict = judge_agent.evaluate(_q(state), answer, contexts)
+    if verdict is None:
+        return {}
+
+    verdict = {**verdict, "round": state.get("iteration", 0)}
+    logger.info(
+        f"Judge round {verdict['round']}: scores={verdict['scores']} passed={verdict['passed']}"
+    )
+    emit({"type": "evaluation", "evaluation": verdict})
+    return {
+        "evaluation": verdict,
+        "evaluation_history": [*(state.get("evaluation_history") or []), verdict],
+    }
+
+
+def _citations_for(answer: str, contexts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Citation list for the [Source N] markers used in an answer."""
+    cites = []
+    for c in contexts:
+        if f"[Source {c.get('source_id')}]" in answer:
+            cite = {k: v for k, v in c.items() if k != "text" and v is not None}
+            cite["snippet"] = (c.get("text") or "")[:200]
+            cites.append(cite)
+    return cites
+
+
+def refine_node(state: AgentState) -> Dict[str, Any]:
+    """Send the judge's feedback back to the LLM and replace the answer with its revision."""
+    logger.info("=== REFINE NODE ===")
+    rounds = state.get("iteration", 0) + 1
+    emit({"type": "stage", "stage": "refining"})
+    emit({"type": "reset"})  # the client discards the streamed draft
+    contexts = state.get("contexts") or []
+
+    try:
+        with Timer("Refine"):
+            revised = refiner_agent.refine(
+                _q(state),
+                state.get("final_answer", ""),
+                contexts,
+                state.get("evaluation") or {},
+                on_token=lambda t: emit({"type": "token", "text": t}),
+            )
+    except Exception as e:
+        logger.warning(f"Refinement failed, keeping the previous answer: {e}")
+        revised = ""
+
+    if not revised:
+        emit({"type": "reset"})
+        emit({"type": "token", "text": state.get("final_answer", "")})
+        return {"iteration": rounds}
+    return {
+        "final_answer": revised,
+        "sources": _citations_for(revised, contexts),
+        "iteration": rounds,
     }
 
 

@@ -83,7 +83,19 @@ def _build_response(query: str, result: Dict[str, Any], include_metadata: bool =
         confidence=result.get("router_confidence", 0.0),
         key_themes=result.get("key_themes", []),
         sources=[CitationModel(**src) for src in result.get("sources", []) if isinstance(src, dict)],
-        agent_responses=result.get("agent_responses", {}),
+        # Full context chunks are for the judge only; keep the payload small
+        agent_responses={
+            name: {k: v for k, v in r.items() if k != "contexts"} if isinstance(r, dict) else r
+            for name, r in (result.get("agent_responses") or {}).items()
+        },
+        evaluation={
+            **result["evaluation"],
+            "refine_rounds": result.get("iteration", 0),
+            "history": [
+                {k: h.get(k) for k in ("round", "scores", "overall", "passed")}
+                for h in result.get("evaluation_history", [])
+            ],
+        } if result.get("evaluation") else None,
         metadata={
             "processing_time": result.get("processing_times", {}).get("total", 0),
             "status": result.get("status"),

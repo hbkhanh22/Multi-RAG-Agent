@@ -24,3 +24,6 @@ data/mcp_workspace/
 
 # Copyrighted source documents (IFAB / FIFA / VFF): keep local, do not redistribute
 data/raw/sport/
+
+# Evaluation run outputs (regenerate with: python -m src.evaluation.run)
+evals/results/

@@ -100,12 +100,14 @@ def test_synthesizer_renumbers_sources_globally(synth):
         "tech": {"answer": "T [Source 1]", "reranked_count": 4,
                  "sources": [{"source_id": 1, "source": "t.pdf"}]},
         "web": {"answer": "W [Source 1] [Source 2]", "reranked_count": 2,
-                "sources": [{"source_id": 1, "source": "u1"}, {"source_id": 2, "source": "u2"}]},
+                "sources": [{"source_id": 1, "source": "u1"}, {"source_id": 2, "source": "u2"}],
+                "contexts": [{"source_id": 1, "text": "a"}, {"source_id": 2, "text": "b"}]},
     }
-    answers, cites = synth._merge_with_global_numbering(usable)
+    answers, cites, contexts = synth._merge_with_global_numbering(usable)
     assert answers["tech"] == "T [Source 1]"
     assert answers["web"] == "W [Source 5] [Source 6]"
     assert [c["source_id"] for c in cites] == [1, 5, 6]
+    assert [(c["agent"], c["source_id"]) for c in contexts] == [("web", 5), ("web", 6)]
 
 
 def test_synthesizer_all_failed(synth):

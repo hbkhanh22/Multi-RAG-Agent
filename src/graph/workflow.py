@@ -20,9 +20,12 @@ from .nodes import (
     tool_agent_node,
     supervisor_node,
     synthesizer_node,
+    evaluator_node,
+    refine_node,
     direct_chat_node,
 )
-from .edges import route_after_router
+from .edges import route_after_router, route_after_evaluation
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,8 @@ def build_agent_graph():
     graph.add_node("tool_agent", tool_agent_node)
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("synthesizer", synthesizer_node)
+    graph.add_node("evaluator", evaluator_node)
+    graph.add_node("refine", refine_node)
     graph.add_node("direct_chat_agent", direct_chat_node)
 
     graph.set_entry_point("condense")
@@ -63,7 +68,10 @@ def build_agent_graph():
         graph.add_edge(node, "synthesizer")
 
     graph.add_edge("direct_chat_agent", END)
-    graph.add_edge("synthesizer", END)
+    # Self-correction loop: judge the answer, revise it with the judge's feedback
+    graph.add_edge("synthesizer", "evaluator")
+    graph.add_conditional_edges("evaluator", route_after_evaluation, {"refine": "refine", "__end__": END})
+    graph.add_edge("refine", "evaluator")
 
     return graph.compile()
 
@@ -85,8 +93,11 @@ def create_initial_state(query: str, history: Optional[List[Dict[str, str]]] = N
         "final_answer": "",
         "key_themes": [],
         "sources": [],
+        "contexts": [],
+        "evaluation": {},
+        "evaluation_history": [],
         "iteration": 0,
-        "max_iterations": 1,
+        "max_iterations": settings.self_eval_max_rounds,
         "error": "",
         "status": "pending",
         "start_time": None,

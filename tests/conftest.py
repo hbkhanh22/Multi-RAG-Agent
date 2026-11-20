@@ -30,6 +30,9 @@ class FakeLLM:
         self.route_json = {"route": "tech", "all_domains": ["tech"], "confidence": 0.9, "reasoning": "t"}
         self.fail_generation = False
         self.calls = []
+        # Judge verdicts returned in order (the last one repeats); default: a passing answer
+        self.judge_scores = [{"faithfulness": 5, "relevance": 5, "completeness": 4}]
+        self.judge_calls = 0
 
     def __call__(self, agent, messages, system_prompt=None, on_token=None):
         out = self._answer(agent, messages, system_prompt)
@@ -43,6 +46,13 @@ class FakeLLM:
         self.calls.append(sp[:40])
         if "query router" in sp:
             return json.dumps(self.route_json)
+        if "strict evaluator" in sp:
+            scores = self.judge_scores[min(self.judge_calls, len(self.judge_scores) - 1)]
+            self.judge_calls += 1
+            return json.dumps({"scores": scores, "issues": ["missing detail"] if min(scores.values()) < 3 else [],
+                               "feedback": "add the missing detail", "context_sufficient": True})
+        if "revising an answer" in sp:
+            return "REFINED [Source 1]"
         if "merging answers" in sp:
             return json.dumps({"answer": "MERGED [Source 1] [Source 5]", "themes": ["a", "b"]})
         if self.fail_generation:

@@ -69,8 +69,9 @@ class SynthesizerAgent(BaseAgent):
                 answer = resp["answer"]
                 themes: List[str] = []
                 citations = [{**c, "agent": name} for c in resp.get("sources", []) if isinstance(c, dict)]
+                contexts = [{**c, "agent": name} for c in resp.get("contexts", []) if isinstance(c, dict)]
             else:
-                answers, citations = self._merge_with_global_numbering(usable)
+                answers, citations, contexts = self._merge_with_global_numbering(usable)
                 answer, themes = self._synthesize_combined(query, answers)
 
             return {
@@ -79,6 +80,7 @@ class SynthesizerAgent(BaseAgent):
                 "synthesized_answer": answer,
                 "key_themes": themes,
                 "sources": citations,
+                "contexts": contexts,
                 "source_count": len(citations),
                 "agent_count": len(usable),
                 "retrieval_stats": stats,
@@ -119,7 +121,7 @@ class SynthesizerAgent(BaseAgent):
     @staticmethod
     def _merge_with_global_numbering(
         usable: Dict[str, Dict[str, Any]],
-    ) -> Tuple[Dict[str, str], List[Dict[str, Any]]]:
+    ) -> Tuple[Dict[str, str], List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Each agent numbers its sources from 1. Shift every agent's numbers by a
         running offset so [Source N] is unique across the merged answer.
@@ -127,6 +129,7 @@ class SynthesizerAgent(BaseAgent):
         offset = 0
         answers: Dict[str, str] = {}
         citations: List[Dict[str, Any]] = []
+        contexts: List[Dict[str, Any]] = []
 
         for name, resp in usable.items():
             sources = [c for c in resp.get("sources", []) if isinstance(c, dict)]
@@ -145,9 +148,17 @@ class SynthesizerAgent(BaseAgent):
                     "agent": name,
                     "source_id": int(sid) + offset if sid is not None else None,
                 })
+            for c in resp.get("contexts", []):
+                if isinstance(c, dict):
+                    sid = c.get("source_id")
+                    contexts.append({
+                        **c,
+                        "agent": name,
+                        "source_id": int(sid) + offset if sid is not None else None,
+                    })
             offset += width
 
-        return answers, citations
+        return answers, citations, contexts
 
     def _synthesize_combined(self, query: str, answers: Dict[str, str]) -> Tuple[str, List[str]]:
         """One LLM call -> (answer, themes)."""

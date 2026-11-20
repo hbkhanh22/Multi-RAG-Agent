@@ -59,6 +59,8 @@ class QueryResponse(BaseModel):
     key_themes: List[str] = []
     sources: List[CitationModel] = []
     agent_responses: Dict[str, Any] = {}
+    # Self-evaluation: latest judge verdict + number of refine rounds (None = not evaluated)
+    evaluation: Optional[Dict[str, Any]] = None
     metadata: Optional[Dict] = None
 
 

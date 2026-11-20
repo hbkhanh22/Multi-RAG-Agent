@@ -28,6 +28,7 @@ import {
   Wrench,
   User,
   Zap,
+  ShieldCheck,
 } from "lucide-react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
@@ -70,6 +71,8 @@ const STAGE_LABELS = {
   routing: "Đang phân loại câu hỏi...",
   retrieving: "Đang tra cứu tài liệu & tìm kiếm...",
   synthesizing: "Đang tổng hợp câu trả lời...",
+  evaluating: "Đang kiểm tra chất lượng câu trả lời...",
+  refining: "Đang cải thiện câu trả lời theo nhận xét...",
 };
 
 const STATUS_LABELS = {
@@ -314,6 +317,10 @@ export default function App() {
           setStage(event.stage);
         } else if (event.type === "tool") {
           if (event.status === "running") setStage(`tool:${event.server} · ${event.tool}`);
+        } else if (event.type === "reset") {
+          // The answer is being revised after self-evaluation: drop the streamed draft
+          streamedText = "";
+          if (started) patchAssistant({ content: "" });
         } else if (event.type === "token") {
           streamedText += event.text;
           if (!started) {
@@ -341,6 +348,7 @@ export default function App() {
             keyThemes: payload.key_themes || [],
             processingTime: payload.metadata?.processing_time,
             toolCalls: payload.agent_responses?.tools?.tool_calls || [],
+            evaluation: payload.evaluation || null,
           };
           const content = payload.final_answer || streamedText || "Agent không trả về nội dung.";
           if (started) {
@@ -655,7 +663,7 @@ export default function App() {
           ))}
 
           {/* THINKING STATE */}
-          {isSending && !streamingId && (
+          {isSending && (!streamingId || stage === "evaluating" || stage === "refining") && (
             <article className="message assistant thinkingMessage">
               <div className="avatar" aria-hidden="true">
                 <Bot size={18} />
@@ -771,6 +779,19 @@ function MessageMeta({ meta }) {
           <span className="metaPill withIcon">
             <Clock3 size={11} />
             {meta.processingTime.toFixed(2)}s
+          </span>
+        )}
+        {meta.evaluation?.scores && (
+          <span
+            className={`metaPill withIcon ${meta.evaluation.passed ? "evalPass" : "evalWarn"}`}
+            title={Object.entries(meta.evaluation.scores)
+              .filter(([, v]) => v != null)
+              .map(([k, v]) => `${k}: ${v}/5`)
+              .join(" · ")}
+          >
+            <ShieldCheck size={11} />
+            Chất lượng {meta.evaluation.overall}/5
+            {meta.evaluation.refine_rounds > 0 && ` · đã tự sửa ${meta.evaluation.refine_rounds} lần`}
           </span>
         )}
       </div>

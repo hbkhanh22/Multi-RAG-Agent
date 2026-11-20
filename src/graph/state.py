@@ -38,10 +38,15 @@ class AgentState(TypedDict):
     final_answer: str
     key_themes: List[str]
     sources: List[Dict]
-    
+    contexts: List[Dict]  # every chunk the answering LLM saw, numbered like its [Source N] markers
+
+    # ========== Self-evaluation (judge -> refine loop) ==========
+    evaluation: Dict[str, Any]  # latest judge verdict ({} = not evaluated)
+    evaluation_history: List[Dict[str, Any]]  # one verdict per round, oldest first
+
     # ========== Control & Metadata ==========
-    iteration: int
-    max_iterations: int
+    iteration: int  # refine rounds done so far
+    max_iterations: int  # refine rounds allowed (settings.self_eval_max_rounds)
     error: str
     status: str  # "pending" | "processing" | "complete" | "error"
     
