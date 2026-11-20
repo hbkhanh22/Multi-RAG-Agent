@@ -32,7 +32,7 @@ def test_query_validation(client):
 
 def test_query_success_flag_follows_status(client, monkeypatch):
     import api.routes as routes
-    monkeypatch.setattr(routes, "run_workflow", lambda q, debug=False, history=None: {
+    monkeypatch.setattr(routes, "run_workflow", lambda q, debug=False, history=None, **kw: {
         "status": "error", "final_answer": "oops", "sources": [], "route": "tech"})
     body = client.post("/api/query", json={"query": "hi"}).json()
     assert body["success"] is False and body["final_answer"] == "oops"
@@ -57,7 +57,7 @@ def test_stream_endpoint_sse(client, monkeypatch):
     import json
     import api.routes as routes
 
-    def fake_stream(q, history=None):
+    def fake_stream(q, history=None, **kw):
         yield {"type": "stage", "stage": "routing"}
         yield {"type": "token", "text": "Hi"}
         yield {"type": "final", "state": {"status": "complete", "final_answer": "Hi", "route": "direct_chat",
@@ -66,12 +66,12 @@ def test_stream_endpoint_sse(client, monkeypatch):
     r = client.post("/api/query/stream", json={"query": "hi"})
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
     events = [json.loads(b[6:]) for b in r.text.split("\n\n") if b.startswith("data: ")]
-    assert [e["type"] for e in events] == ["stage", "token", "final"]
+    assert [e["type"] for e in events] == ["start", "stage", "token", "final"]
     assert events[-1]["response"]["final_answer"] == "Hi" and events[-1]["response"]["success"] is True
 
 
 def test_stream_endpoint_hides_errors(client, monkeypatch):
     import api.routes as routes
-    monkeypatch.setattr(routes, "stream_workflow", lambda q, history=None: iter([{"type": "error", "message": "secret detail"}]))
+    monkeypatch.setattr(routes, "stream_workflow", lambda q, history=None, **kw: iter([{"type": "error", "message": "secret detail"}]))
     r = client.post("/api/query/stream", json={"query": "hi"})
     assert "secret" not in r.text and "trace id" in r.text

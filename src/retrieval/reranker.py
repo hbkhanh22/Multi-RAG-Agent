@@ -7,17 +7,14 @@ from typing import List, Optional, Tuple
 import logging
 
 import os
+import threading
 
-import torch
-from sentence_transformers import CrossEncoder
 from langchain_core.documents import Document
 
 from config.settings import settings
 from src.retrieval.lang import pick_query
 
 logger = logging.getLogger(__name__)
-
-torch.set_num_threads(settings.torch_threads or os.cpu_count() or 1)
 
 
 class Reranker:
@@ -34,21 +31,40 @@ class Reranker:
             model_name = settings.reranker_model_path
 
         self.model_name = model_name
-        self.model: Optional[CrossEncoder] = None
-        # Pre-load the model immediately so first query doesn't pay the cold-start cost
-        self._load_model()
+        self.model = None  # sentence_transformers.CrossEncoder or OnnxCrossEncoder
+        self._lock = threading.Lock()
+        # Loaded lazily (importing this module must stay cheap); the API calls warmup()
+        # at startup so the first question does not pay the cold start.
+
+    def warmup(self) -> bool:
+        return self._load_model()
 
     def _load_model(self) -> bool:
         if self.model is not None:
             return True
+        with self._lock:
+            if self.model is not None:
+                return True
+            return self._load_model_locked()
 
+    def _load_model_locked(self) -> bool:
         try:
-            logger.info(f"Loading reranker model: {self.model_name}")
-            self.model = CrossEncoder(
-                self.model_name,
-                max_length=settings.reranker_max_length,
-                device=settings.embedding_device,
-            )
+            if settings.effective_model_backend == "onnx":
+                from src.retrieval.onnx_models import OnnxCrossEncoder
+
+                logger.info("Loading reranker model: ONNX int8")
+                self.model = OnnxCrossEncoder()
+            else:
+                import torch
+                from sentence_transformers import CrossEncoder
+
+                torch.set_num_threads(settings.torch_threads or os.cpu_count() or 1)
+                logger.info(f"Loading reranker model: {self.model_name}")
+                self.model = CrossEncoder(
+                    self.model_name,
+                    max_length=settings.reranker_max_length,
+                    device=settings.embedding_device,
+                )
             logger.info("Reranker model loaded and ready.")
             return True
         except Exception as e:

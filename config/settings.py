@@ -18,7 +18,7 @@ _PATH_FIELDS = (
     "data_dir",
     "sport_data_path", "tech_data_path", "general_data_path",
     "sport_store_path", "tech_store_path", "general_store_path",
-    "log_dir", "memory_db_path", "mcp_config_path", "mcp_workspace_dir",
+    "log_dir", "memory_db_path", "mcp_config_path", "mcp_workspace_dir", "onnx_model_dir",
 )
 
 
@@ -146,6 +146,54 @@ class Settings(BaseSettings):
     supported_file_types: List[str] = [".pdf", ".txt", ".md", ".docx"]
     max_file_size_mb: int = 100
 
+    # ============= Infrastructure (Phase 4) =============
+    # Relational DB for conversations, document registry and ingest jobs.
+    # Empty => SQLite file at memory_db_path (dev). Production: postgresql+psycopg://...
+    database_url: str = ""
+    # Vector store backend: "chroma" (embedded, files under data/vectorstores) or
+    # "pgvector" (chunks + embeddings in the same Postgres as database_url).
+    vector_backend: str = "chroma"
+    # Embedding / reranker runtime: "torch" (fp32 sentence-transformers), "onnx" (int8
+    # ONNX Runtime models exported by scripts/export_onnx.py) or "auto" (onnx when the
+    # exported models exist, else torch). Eval: identical hit/MRR, 1.6-3.3x faster.
+    model_backend: str = "auto"
+    onnx_model_dir: Path = Path("data/models/onnx")
+    onnx_threads: int = 0              # 0 = onnxruntime default (all physical cores)
+
+    # Where uploaded / raw documents live: "local" (data/raw/<domain>) or "s3"
+    # (any S3-compatible store: AWS S3, MinIO, Cloudflare R2, GCS interop).
+    document_storage: str = "local"
+    s3_endpoint_url: str = ""          # e.g. http://minio:9000 ; empty => AWS default
+    s3_bucket: str = "rag-documents"
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_region: str = "us-east-1"
+
+    # Ingestion worker: "inline" = a thread inside the API process (single-node dev),
+    # "external" = run `python -m src.worker` separately (API only enqueues jobs).
+    ingest_worker: str = "inline"
+    ingest_poll_interval: float = 2.0
+    ingest_max_attempts: int = 3
+    # Watch data/raw for changes and re-sync automatically (local storage only).
+    watch_documents: bool = True
+    watch_debounce_ms: int = 2000
+
+    # Rate limiting (per client IP / API key, per process): requests per minute on
+    # the query endpoints. 0 disables it.
+    rate_limit_per_minute: int = 30
+    max_upload_mb: int = 50
+    # Admin token for document management endpoints. Empty => endpoints open
+    # (dev only; set it in any shared deployment).
+    admin_token: str = ""
+
+    # Observability
+    log_json: bool = False             # one JSON object per log line (for Loki/ELK/Cloud Logging)
+    metrics_enabled: bool = True       # Prometheus metrics at /metrics
+    # Langfuse tracing: enabled when the keys are set (Cloud or self-hosted host).
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+
     # ============= API =============
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000"
     max_batch_queries: int = 10
@@ -171,6 +219,30 @@ class Settings(BaseSettings):
     @property
     def reranker_model_path(self) -> str:
         return self._local_or_hub(self.reranker_model)
+
+    @property
+    def effective_model_backend(self) -> str:
+        """"torch" or "onnx" ("auto" resolved by checking the exported model files)."""
+        backend = self.model_backend.lower()
+        if backend != "auto":
+            return backend
+        ready = all(
+            (self.onnx_model_dir / m.split("/")[-1] / "model_int8.onnx").exists()
+            for m in (self.embedding_model, self.reranker_model)
+        )
+        return "onnx" if ready else "torch"
+
+    @property
+    def sqlalchemy_url(self) -> str:
+        return self.database_url or f"sqlite:///{self.memory_db_path.as_posix()}"
+
+    @property
+    def is_postgres(self) -> bool:
+        return self.sqlalchemy_url.startswith("postgresql")
+
+    @property
+    def domain_data_paths(self) -> dict:
+        return {"sport": self.sport_data_path, "tech": self.tech_data_path, "general": self.general_data_path}
 
     @property
     def cors_origin_list(self) -> List[str]:

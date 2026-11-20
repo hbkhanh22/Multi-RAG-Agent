@@ -4,13 +4,22 @@ embeddings and reranker are the real local ones (the `tech` store must be
 ingested: data/raw/tech PDFs).
 """
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+# Before config.settings is imported: tests never touch the real data/memory.db
+# (conversations, document registry, job queue) and are not rate limited.
+_TEST_DB_DIR = tempfile.mkdtemp(prefix="rag-tests-")
+os.environ["DATABASE_URL"] = f"sqlite:///{Path(_TEST_DB_DIR, 'app.db').as_posix()}"
+os.environ["RATE_LIMIT_PER_MINUTE"] = "0"
+os.environ["ADMIN_TOKEN"] = ""
 
 MCP_QUERY = "What is Model Context Protocol (MCP)?"
 OFF_TOPIC_QUERY = "What is the interest rate on 10-year US treasury bonds?"
@@ -21,6 +30,14 @@ FAKE_WEB_RESULTS = [
     {"title": "Bond markets", "url": "https://example.com/b", "snippet": "Bonds rallied",
      "source": "https://example.com/b", "source_id": 2, "domain": "web", "type": "web_search", "rank": 2},
 ]
+
+
+def pytest_collection_modifyitems(config, items):
+    """Tests that load the real embedding/reranker models (or the agent graph) are
+    marked `models`; CI runs `pytest -m "not models"` (no 4 GB model download)."""
+    for item in items:
+        if "modules" in getattr(item, "fixturenames", ()):
+            item.add_marker(pytest.mark.models)
 
 
 class FakeLLM:

@@ -1,0 +1,158 @@
+# Production-like stack on one machine:
+#
+#   web (nginx :8080) --/api--> api (FastAPI, N uvicorn workers)
+#                                 |  \
+#                     postgres+pgvector  minio (S3: documents, models)
+#                                 |  /
+#                               worker (ingestion jobs)
+#   monitoring profile: prometheus (:9090) + grafana (:3000)
+#
+# Quick start (see README "Deployment"):
+#   python scripts/export_onnx.py          # once, creates data/models/onnx (int8 models)
+#   cp .env.example .env                    # set NVIDIA_API_KEY, passwords, ADMIN_TOKEN
+#   docker compose up -d --build            # http://localhost:8080
+#   docker compose --profile monitoring up -d
+#
+# Only the web port is published by default; everything else stays on the internal network.
+
+x-backend: &backend
+  build:
+    context: .
+    args:
+      BASE_IMAGE: ${BACKEND_BASE_IMAGE:-ghcr.io/astral-sh/uv:python3.11-bookworm-slim}
+  image: ${BACKEND_IMAGE:-multi-rag-agent:latest}
+  restart: unless-stopped
+  env_file: .env
+  environment: &backend-env
+    DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rag}
+    VECTOR_BACKEND: pgvector
+    MODEL_BACKEND: onnx
+    DOCUMENT_STORAGE: s3
+    S3_ENDPOINT_URL: http://minio:9000
+    S3_BUCKET: ${S3_BUCKET:-rag-documents}
+    S3_ACCESS_KEY: ${MINIO_ROOT_USER:-rag}
+    S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+    INGEST_WORKER: external
+    WATCH_DOCUMENTS: "false"
+    LOG_JSON: "true"
+    MCP_ENABLED: "false"
+  volumes:
+    - ./data/models/onnx:/app/data/models/onnx:ro
+  depends_on:
+    postgres:
+      condition: service_healthy
+    minio:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg17}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-rag}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits: {memory: 1g}
+
+  minio:
+    # last community image published on Docker Hub; any S3 (AWS S3, R2, GCS) works instead
+    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2025-04-22T22-12-26Z}
+    restart: unless-stopped
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-rag}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits: {memory: 512m}
+
+  migrate:
+    <<: *backend
+    command: ["migrate"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    command: ["api"]
+    environment:
+      <<: *backend-env
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+    expose: ["8000"]
+    deploy:
+      resources:
+        limits: {memory: 4g}
+
+  worker:
+    <<: *backend
+    command: ["worker"]
+    healthcheck:
+      disable: true
+    deploy:
+      resources:
+        limits: {memory: 2g}
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        DIST: ${WEB_DIST:-build}
+    image: ${WEB_IMAGE:-multi-rag-web:latest}
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    depends_on:
+      - api
+
+  prometheus:
+    profiles: ["monitoring"]
+    image: quay.io/prometheus/prometheus:v3.1.0
+    restart: unless-stopped
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  grafana:
+    profiles: ["monitoring"]
+    image: grafana/grafana-oss:11.4.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  pgdata:
+  miniodata:
+  promdata:
+  grafanadata:

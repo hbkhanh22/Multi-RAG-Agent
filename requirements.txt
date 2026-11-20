@@ -1,42 +1,17 @@
-# Core LangChain / LangGraph
-langchain-core>=1.0
-langchain-community>=0.4
-langchain-text-splitters>=1.0
-langchain-classic>=1.0
-langgraph>=1.0
+# Full development environment = runtime + torch models, export and evaluation tools.
+-r requirements-runtime.txt
 
-# LLM provider (NVIDIA NIM)
-langchain-nvidia-ai-endpoints>=1.0
-
-# Vector store & embeddings & reranking
-chromadb>=1.0
-langchain-chroma>=1.0
+# fp32 models (MODEL_BACKEND=torch) and ONNX export (scripts/export_onnx.py)
 sentence-transformers>=5.0
-rank-bm25>=0.2.2
-
-# API
-fastapi>=0.110
-uvicorn>=0.27
-pydantic>=2.6
-pydantic-settings>=2.1
-
-# Document processing
-pypdf>=4.0
-docx2txt>=0.8
-
-# Web search / scraping
-ddgs>=9.0
-httpx>=0.27
-beautifulsoup4>=4.12
-
-# MCP client (tools from external MCP servers)
-mcp>=1.2
-
-# Utilities
-python-dotenv>=1.0
-
-# Development
-pytest>=8.0
+onnx>=1.17
+onnxscript>=0.3
 
 # Offline evaluation (python -m src.evaluation.run --ragas)
 ragas>=0.4
+
+# Optional tracing (enabled when LANGFUSE_* keys are set)
+# langfuse>=3
+
+# Development
+pytest>=8.0
+moto[s3]>=5

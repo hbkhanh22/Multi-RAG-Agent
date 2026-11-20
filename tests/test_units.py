@@ -129,16 +129,6 @@ def test_query_expansion_parse_list(modules):
     assert _parse_string_list('{"a": 1}') == []
 
 
-def test_manifest_key_migration(modules, tmp_path, monkeypatch):
-    from src.ingestion import auto_ingest as ai
-    from config.settings import BASE_DIR
-    manifest = tmp_path / "m.json"
-    legacy_key = str(BASE_DIR / "data" / "raw" / "tech" / "x.pdf").replace("/", "\\")
-    manifest.write_text(json.dumps({legacy_key: {"domain": "tech"}}), encoding="utf-8")
-    monkeypatch.setattr(ai, "MANIFEST_FILE", manifest)
-    assert list(ai._load_manifest()) == ["data/raw/tech/x.pdf"]
-
-
 @pytest.mark.parametrize("q", ["Xin chào", "xin chào bạn!", "Hello", "hi", "Cảm ơn nhiều nhé", "Bạn là ai?", "Chào buổi sáng", "Tạm biệt"])
 def test_fast_route_smalltalk(modules, q):
     from src.agents.router_agent import fast_route

@@ -68,10 +68,14 @@ def test_contextualize_survives_llm_errors(contextualizer, monkeypatch):
 def test_index_version_gets_its_own_store(monkeypatch):
     from config.settings import settings
     from src.retrieval.vector_store import embedding_slug
+    monkeypatch.setattr(settings, "model_backend", "torch")
     monkeypatch.setattr(settings, "index_version", "")
     assert embedding_slug() == "bge-m3"
     monkeypatch.setattr(settings, "index_version", "v2")
     assert embedding_slug() == "bge-m3-v2"
+    # int8 vectors are not interchangeable with fp32 ones: separate index
+    monkeypatch.setattr(settings, "model_backend", "onnx")
+    assert embedding_slug() == "bge-m3-onnx-int8-v2"
 
 
 def test_crosslingual_instruction_toggle(modules, monkeypatch):
@@ -100,6 +104,7 @@ def test_detect_lang_and_pick_query():
 
 def test_reranker_scores_each_doc_with_same_language_variant(modules, monkeypatch):
     from src.retrieval import reranker
+    reranker.warmup()
     seen = []
     monkeypatch.setattr(reranker.model, "predict", lambda pairs, **kw: seen.extend(pairs) or [0.9] * len(pairs))
     docs = [Document(page_content="A circle with a radius of 9.15 m"),

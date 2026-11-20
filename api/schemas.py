@@ -51,6 +51,7 @@ class AgentResponseModel(BaseModel):
 class QueryResponse(BaseModel):
     """Query response"""
     conversation_id: Optional[str] = None
+    request_id: Optional[str] = None
     query: str
     success: bool
     final_answer: str
@@ -61,6 +62,9 @@ class QueryResponse(BaseModel):
     agent_responses: Dict[str, Any] = {}
     # Self-evaluation: latest judge verdict + number of refine rounds (None = not evaluated)
     evaluation: Optional[Dict[str, Any]] = None
+    # LLM token usage of this answer (prompt/completion, per model; estimated if the
+    # provider did not report it)
+    usage: Optional[Dict[str, Any]] = None
     metadata: Optional[Dict] = None
 
 

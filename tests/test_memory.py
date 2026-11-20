@@ -94,7 +94,7 @@ def test_api_conversation_flow(api_client, monkeypatch):
     client, routes = api_client
     calls = []
 
-    def fake_run(q, debug=False, history=None):
+    def fake_run(q, debug=False, history=None, **kw):
         calls.append(list(history or []))
         return {"status": "complete", "final_answer": f"A:{q}", "route": "tech", "sources": [], "processing_times": {"total": 1}}
     monkeypatch.setattr(routes, "run_workflow", fake_run)
@@ -114,7 +114,7 @@ def test_api_conversation_flow(api_client, monkeypatch):
 
 def test_api_unknown_conversation_id_starts_new(api_client, monkeypatch):
     client, routes = api_client
-    monkeypatch.setattr(routes, "run_workflow", lambda q, debug=False, history=None: {
+    monkeypatch.setattr(routes, "run_workflow", lambda q, debug=False, history=None, **kw: {
         "status": "complete", "final_answer": "x", "route": "tech", "sources": []})
     cid = client.post("/api/query", json={"query": "q", "conversation_id": "does-not-exist"}).json()["conversation_id"]
     assert cid and cid != "does-not-exist"
@@ -122,7 +122,7 @@ def test_api_unknown_conversation_id_starts_new(api_client, monkeypatch):
 
 def test_failed_answers_not_remembered(api_client, monkeypatch):
     client, routes = api_client
-    monkeypatch.setattr(routes, "run_workflow", lambda q, debug=False, history=None: {
+    monkeypatch.setattr(routes, "run_workflow", lambda q, debug=False, history=None, **kw: {
         "status": "error", "final_answer": "oops", "route": "tech", "sources": []})
     cid = client.post("/api/query", json={"query": "q"}).json()["conversation_id"]
     assert client.get("/api/conversations").json()["conversations"] == []

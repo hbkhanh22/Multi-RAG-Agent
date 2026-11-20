@@ -8,17 +8,22 @@ the event loop.
 
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from api.deps import rate_limit
+from src import runtime
 from src.graph import run_workflow, stream_workflow
 from src.graph.nodes import router_agent
 from src.mcp_client import mcp_manager
 from src.memory import conversation_store
+from src.observability import metrics, tracing
+from src.observability.logging import request_id_var
 from src.retrieval import vector_store_manager
 from api.schemas import (
     QueryRequest,
@@ -55,6 +60,13 @@ def _open_conversation(conversation_id: Optional[str]) -> Tuple[Optional[str], L
         return None, []
 
 
+def _new_run(conversation_id: Optional[str]) -> Tuple[runtime.RunContext, Dict[str, Any]]:
+    """Run context (cancel flag + token usage) and extra graph config (tracing)."""
+    rid = request_id_var.get()
+    ctx = runtime.RunContext(None if rid == "-" else rid)
+    return ctx, tracing.run_config(ctx.request_id, conversation_id)
+
+
 def _remember(cid: Optional[str], query: str, resp: QueryResponse) -> None:
     """Persist a finished turn; failed answers are not stored (they would pollute context)."""
     if not cid or not resp.success or not resp.final_answer:
@@ -68,7 +80,9 @@ def _remember(cid: Optional[str], query: str, resp: QueryResponse) -> None:
             "key_themes": resp.key_themes,
             "processing_time": (resp.metadata or {}).get("processing_time"),
             "tool_calls": (resp.agent_responses.get("tools") or {}).get("tool_calls", []),
-        })
+            "usage": resp.usage,
+            "request_id": resp.request_id,
+        }, usage=resp.usage)
     except Exception as e:
         logger.error(f"Failed to save conversation turn: {e}", exc_info=True)
 
@@ -96,6 +110,7 @@ def _build_response(query: str, result: Dict[str, Any], include_metadata: bool =
                 for h in result.get("evaluation_history", [])
             ],
         } if result.get("evaluation") else None,
+        usage=result.get("usage"),
         metadata={
             "processing_time": result.get("processing_times", {}).get("total", 0),
             "status": result.get("status"),
@@ -104,15 +119,18 @@ def _build_response(query: str, result: Dict[str, Any], include_metadata: bool =
     )
 
 
-@router.post("/query", response_model=QueryResponse)
+@router.post("/query", response_model=QueryResponse, dependencies=[Depends(rate_limit)])
 def query_endpoint(request: QueryRequest):
     """Process a query through the multi-RAG agent system"""
     try:
-        logger.info(f"Processing query: {request.query}")
+        logger.info(f"Processing query ({len(request.query)} chars)")
         cid, history = _open_conversation(request.conversation_id)
-        result = run_workflow(request.query, debug=request.debug, history=history)
+        ctx, config = _new_run(cid)
+        result = run_workflow(request.query, debug=request.debug, history=history, run_ctx=ctx, config=config)
+        metrics.record_query(result)
         resp = _build_response(request.query, result, request.include_metadata)
         resp.conversation_id = cid
+        resp.request_id = ctx.request_id
         _remember(cid, request.query, resp)
         return resp
     except Exception as e:
@@ -123,32 +141,68 @@ def _sse(event: Dict[str, Any]) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 
 
-@router.post("/query/stream")
+@router.post("/query/stream", dependencies=[Depends(rate_limit)])
 def query_stream_endpoint(request: QueryRequest):
     """
     Same as /query but streamed as Server-Sent Events:
-    `stage` / `route` / `token` events while running, then one `final` event
-    carrying the full QueryResponse (sources, themes...), or an `error` event.
+    one `start` event (request_id, needed to cancel), `stage` / `route` / `token`
+    events while running, then one `final` event carrying the full QueryResponse
+    (sources, themes, usage...), or a `cancelled` / `error` event.
+
+    Cancel with POST /api/query/{request_id}/cancel (the "Stop" button) or by closing
+    the connection: the graph stops before its next step and a streaming LLM call is
+    interrupted, so no more tokens are paid for.
     """
+    ctx, config = _new_run(request.conversation_id)
+    runtime.register(ctx)
+    log_rid = request_id_var.get()
+
     def events():
+        token = request_id_var.set(log_rid)   # the generator runs in pool threads: keep the log id
+        started = time.time()
+        ttft = None
+        finished = False
+        metrics.stream_started()
         try:
             cid, history = _open_conversation(request.conversation_id)
-            for event in stream_workflow(request.query, history):
-                if event.get("type") == "final":
+            yield _sse({"type": "start", "request_id": ctx.request_id, "conversation_id": cid})
+            for event in stream_workflow(request.query, history, run_ctx=ctx, config=config):
+                kind = event.get("type")
+                if kind == "token" and ttft is None:
+                    ttft = time.time() - started
+                if kind == "final":
+                    metrics.record_query(event["state"], ttft)
                     resp = _build_response(request.query, event["state"], request.include_metadata)
                     resp.conversation_id = cid
+                    resp.request_id = ctx.request_id
                     _remember(cid, request.query, resp)
                     yield _sse({"type": "final", "response": resp.model_dump()})
-                elif event.get("type") == "error":
+                elif kind == "cancelled":
+                    metrics.record_cancelled()
+                    yield _sse({"type": "cancelled", "request_id": ctx.request_id, "usage": ctx.usage()})
+                elif kind == "error":
                     trace_id = uuid4().hex[:8]
                     logger.error(f"[{trace_id}] stream failed: {event.get('message')}")
                     yield _sse({"type": "error", "message": f"Internal server error (trace id: {trace_id})"})
                 else:
                     yield _sse(event)
+            finished = True
+        except GeneratorExit:      # client went away: stop generating (and paying for) tokens
+            ctx.cancel()
+            raise
         except Exception as e:
             trace_id = uuid4().hex[:8]
             logger.error(f"[{trace_id}] stream failed: {e}", exc_info=True)
             yield _sse({"type": "error", "message": f"Internal server error (trace id: {trace_id})"})
+        finally:
+            if not finished:
+                ctx.cancel()
+            runtime.unregister(ctx)
+            metrics.stream_finished()
+            try:
+                request_id_var.reset(token)
+            except ValueError:   # reset from a different thread/context
+                pass
 
     return StreamingResponse(
         events(),
@@ -157,7 +211,15 @@ def query_stream_endpoint(request: QueryRequest):
     )
 
 
-@router.post("/query/batch", response_model=BatchQueryResponse)
+@router.post("/query/{request_id}/cancel")
+def cancel_query_endpoint(request_id: str):
+    """Stop an answer that is being generated (the UI "Stop" button)."""
+    if not runtime.cancel(request_id):
+        raise HTTPException(status_code=404, detail="No running answer with this request id")
+    return {"cancelled": request_id}
+
+
+@router.post("/query/batch", response_model=BatchQueryResponse, dependencies=[Depends(rate_limit)])
 def batch_query_endpoint(request: BatchQueryRequest):
     """Process multiple queries (sequentially)"""
     if len(request.queries) > settings.max_batch_queries:
@@ -287,7 +349,7 @@ def domain_stats_endpoint(domain: str):
         raise _internal_error("domain stats failed", e)
 
 
-@router.post("/chat", response_model=QueryResponse)
+@router.post("/chat", response_model=QueryResponse, dependencies=[Depends(rate_limit)])
 def chat_endpoint(request: QueryRequest):
     """Chat endpoint (alias of /query, used by the frontend)"""
     return query_endpoint(request)

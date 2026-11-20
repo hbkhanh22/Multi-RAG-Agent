@@ -1,6 +1,6 @@
 # Hệ Thống Multi-RAG Agent (Multi-Agent Retrieval-Augmented Generation)
 
-> Hệ thống Multi-RAG Agent thông minh điều phối nhiều Agent chuyên biệt theo từng miền tri thức (*Sport*, *Tech*, *General*), kết hợp **LangGraph**, **Chroma Vector Store**, **Hybrid Retrieval (Vector + BM25)**, **Cross-Encoder Reranker**, và **LLMs (NVIDIA NIM)** để giải quyết các truy vấn phức tạp với độ chính xác và khả năng trích dẫn nguồn cao.
+> Hệ thống Multi-RAG Agent thông minh điều phối nhiều Agent chuyên biệt theo từng miền tri thức (*Sport*, *Tech*, *General*), kết hợp **LangGraph**, **pgvector / Chroma**, **Hybrid Retrieval (Vector + BM25)**, **Cross-Encoder Reranker (ONNX int8)**, và **LLMs (NVIDIA NIM)**; triển khai bằng **Docker Compose** (Postgres + pgvector, S3/MinIO, worker nạp tài liệu, Prometheus/Grafana) để giải quyết các truy vấn phức tạp với độ chính xác và khả năng trích dẫn nguồn cao.
 
 ---
 
@@ -20,6 +20,7 @@
 8. [API Endpoints & Cách Sử Dụng](#8-api-endpoints--cách-sử-dụng)
 9. [Khởi Chạy Trực Tiếp Qua Python Script](#9-khởi-chạy-trực-tiếp-qua-python-script)
 10. [Tiến Độ Dự Án](#10-tiến-độ-dự-án)
+11. [Hạ Tầng & Triển Khai Production](#11-hạ-tầng--triển-khai-production)
 
 ---
 
@@ -31,7 +32,7 @@ Hệ thống được thiết kế theo mô hình **Multi-Agent Directed Acyclic
 flowchart LR
     U(["👤 Người dùng"]) --> FE["React + Vite UI<br/>(SSE streaming, lịch sử chat)"]
     FE -->|"POST /api/query/stream"| API["FastAPI<br/>api/routes.py"]
-    API --> MEM[("SQLite<br/>data/memory.db")]
+    API --> MEM[("PostgreSQL / SQLite<br/>hội thoại, documents, jobs")]
     API --> G
 
     subgraph G["LangGraph workflow"]
@@ -45,13 +46,17 @@ flowchart LR
         A1 & A2 & A3 & SV --> SY["Synthesizer"]
     end
 
-    A1 --> VS[("ChromaDB + BM25<br/>sport / tech / general")]
-    A1 --> RR["Reranker<br/>bge-reranker-v2-m3"]
+    A1 --> VS[("pgvector / Chroma + BM25<br/>sport / tech / general")]
+    A1 --> RR["Reranker<br/>bge-reranker-v2-m3 (ONNX int8)"]
     A2 --> DDG["DuckDuckGo"]
     A3 --> MCP["MCP servers<br/>filesystem, fetch"]
     G -.->|"gọi LLM"| NIM["NVIDIA NIM<br/>Nemotron"]
-    ING["Auto-ingest<br/>(luồng nền khi khởi động)"] --> VS
+    ST[("Kho tài liệu<br/>data/raw hoặc S3/MinIO")] --> ING["Ingestion worker<br/>(hàng đợi ingest_jobs)"]
+    API -->|"upload / sync"| ING
+    ING --> VS
 ```
+
+Hạ tầng triển khai (Docker Compose, Kubernetes làm tương tự) được mô tả ở [mục 11](#11-hạ-tầng--triển-khai-production).
 
 ---
 
@@ -305,24 +310,37 @@ Khác với judge thang 1-5, RAGAS tách câu trả lời thành từng khẳng 
 ```
 multi-rag-agent/
 ├── api/                           # FastAPI Backend
-│   ├── main.py                    # Khởi tạo app, CORS, lifespan nạp dữ liệu tự động
-│   ├── routes.py                  # /query, /query/stream, /query/batch, /route, /health, /stats, /conversations, /mcp/status
+│   ├── main.py                    # App, middleware request-id + metric, lifespan (worker nội tuyến, watcher), /health/live|ready, /metrics
+│   ├── routes.py                  # /query, /query/stream, /query/{id}/cancel, /query/batch, /route, /health, /stats, /conversations, /mcp/status
+│   ├── documents.py               # /documents (upload, list, delete), /ingest/sync, /jobs
+│   ├── deps.py                    # Giới hạn lượt gọi (sliding window), ADMIN_TOKEN
 │   └── schemas.py                 # Pydantic schemas cho Request & Response
+├── alembic/ + alembic.ini         # Migration schema (Postgres + SQLite), idempotent
+├── docker/entrypoint.sh           # api | worker | migrate
+├── Dockerfile                     # Image backend (ONNX, không torch)
+├── docker-compose.yml             # web, api, worker, migrate, postgres+pgvector, minio (+ prometheus, grafana)
+├── deploy/                        # Cấu hình Prometheus + Grafana (datasource, dashboard)
+├── .github/workflows/ci.yml       # Test + migration trên pgvector, build/push image GHCR, eval gate (self-hosted)
+├── scripts/
+│   ├── export_onnx.py             # Xuất bge-m3 + reranker sang ONNX và lượng tử hóa int8
+│   ├── sync_models.py             # Đẩy/kéo mô hình ONNX lên/xuống S3
+│   └── eval_gate.py               # Chặn deploy khi hit rate / MRR tụt dưới ngưỡng
 ├── config/                        # Cấu hình hệ thống
 │   ├── settings.py                # Pydantic BaseSettings đọc biến môi trường (.env)
 │   └── mcp_servers.json           # Khai báo MCP server (filesystem, fetch) + allow-list tool
 ├── data/                          # Dữ liệu
+│   ├── models/onnx/               # Mô hình ONNX int8 (tạo bằng scripts/export_onnx.py)
 │   ├── raw/                       # Thư mục chứa tài liệu gốc theo miền
 │   │   ├── sport/                 # Luật thi đấu, lịch sử giải đấu, chiến thuật, khoa học thể thao
 │   │   ├── tech/                  # Tài liệu kỹ thuật, kiến trúc phần mềm, AI/ML
 │   │   └── general/               # Tri thức tổng hợp khác
-│   └── vectorstores/              # Nơi lưu trữ cơ sở dữ liệu vector ChromaDB
-│       ├── .ingested_manifest.json# Manifest theo dõi trạng thái hash của tài liệu
+│   └── vectorstores/              # Chroma (backend dev); mỗi index một thư mục con <model>[-onnx-int8][-version]
 │       ├── sport_store/           # Chroma collection: sport
 │       ├── tech_store/            # Chroma collection: tech
 │       └── general_store/         # Chroma collection: general
 ├── frontend/                      # Ứng dụng giao diện người dùng React + Vite
 │   ├── src/                       # Components, Chat UI, styles
+│   ├── Dockerfile + nginx.conf    # Image web: build tĩnh + reverse proxy /api (SSE không buffer)
 │   └── package.json
 ├── src/                           # Mã nguồn cốt lõi (Core Engine)
 │   ├── agents/                    # Định nghĩa các Agents
@@ -339,13 +357,14 @@ multi-rag-agent/
 │   │   ├── edges.py               # Điều kiện rẽ nhánh (Conditional Edges)
 │   │   └── workflow.py            # Biên dịch StateGraph và hàm run_workflow()
 │   ├── ingestion/                 # Pipeline xử lý dữ liệu
-│   │   ├── auto_ingest.py         # Quét và nhúng tài liệu gia tăng tự động
+│   │   ├── auto_ingest.py         # sync_documents(): đồng bộ kho tài liệu -> index (bảng documents)
 │   │   ├── loader.py              # Bộ đọc PDF/Text/DOCX
 │   │   ├── chunker.py             # Bộ cắt văn bản đệ quy (Recursive Splitter)
 │   │   ├── contextualizer.py      # (tùy chọn) Ngữ cảnh theo trang: tiêu đề › mục + tóm tắt, gắn vào đầu chunk
-│   │   └── embedder.py            # VectorStoreBuilder
+│   │   └── embedder.py            # VectorStoreBuilder (script/notebook)
 │   ├── retrieval/                 # Công cụ truy xuất RAG
-│   │   ├── vector_store.py        # VectorStoreManager: 3 collection Chroma, vector/BM25/hybrid search
+│   │   ├── vector_store.py        # VectorStoreManager + backend Chroma / pgvector, vector/BM25/hybrid search
+│   │   ├── onnx_models.py         # Embedding + cross-encoder chạy ONNX Runtime int8
 │   │   ├── reranker.py            # Cross-Encoder Reranker (chấm theo biến thể câu hỏi cùng ngôn ngữ)
 │   │   ├── lang.py                # Nhận diện tiếng Việt và chọn biến thể câu hỏi cho rerank
 │   │   └── query_expansion.py     # Kỹ thuật HyDE & Multi-Query Expansion
@@ -355,12 +374,17 @@ multi-rag-agent/
 │   │   ├── ragas_eval.py          # Độ đo RAGAS (faithfulness, answer relevancy, context precision/recall, factual correctness)
 │   │   └── run.py                 # CLI chạy eval offline: python -m src.evaluation.run
 │   ├── mcp_client/manager.py      # MCPManager: kết nối stdio, allow-list, chặn SSRF, timeout
-│   ├── memory/                    # Bộ nhớ hội thoại SQLite + viết lại câu hỏi nối tiếp
+│   ├── memory/                    # Bộ nhớ hội thoại (SQLAlchemy: SQLite / Postgres) + viết lại câu hỏi nối tiếp
+│   ├── storage/                   # db.py (schema), objects.py (local / S3), jobs.py (hàng đợi SKIP LOCKED)
+│   ├── observability/             # metrics.py (Prometheus), logging.py (JSON + request id), tracing.py (Langfuse)
+│   ├── runtime.py                 # RunContext mỗi request: cờ huỷ + đếm token
+│   ├── worker.py                  # Worker nạp tài liệu + theo dõi thư mục (python -m src.worker)
 │   ├── tools/                     # WebSearchTool, WebScraperTool (calculator/search_tools chưa nối vào graph)
 │   └── utils/                     # Công cụ ghi log và bộ đo thời gian (Timer)
 ├── evals/datasets/                # Bộ câu hỏi chuẩn (JSONL): câu hỏi, đáp án mẫu, nguồn + trang cần truy xuất
-├── tests/                         # pytest (LLM giả, kho vector + reranker thật)
-├── requirements.txt               # Thư viện phụ thuộc Python
+├── tests/                         # pytest (LLM giả, kho vector + reranker thật; nhãn `models` cho test cần mô hình)
+├── requirements-runtime.txt       # Thư viện cho image (không torch)
+├── requirements.txt               # Runtime + torch, export ONNX, RAGAS, test
 └── README.md                      # Tài liệu hướng dẫn dự án
 ```
 
@@ -397,6 +421,18 @@ Mọi cấu hình được tập trung tại file [config/settings.py](file:///e
 | `RAGAS_LLM_MODEL` | `""` (= judge / default) | Model dùng để chấm RAGAS offline |
 | `RAGAS_CONCURRENCY` | `2` | Số lệnh gọi LLM song song khi chấm RAGAS (gói NIM miễn phí khoảng 40 request/phút) |
 | `CORS_ORIGINS` | `localhost:5173,...` | Danh sách origin được phép (phân tách bằng dấu phẩy) |
+| `DATABASE_URL` | `""` (= SQLite `data/memory.db`) | DB quan hệ cho hội thoại, danh mục tài liệu, hàng đợi job. Production: `postgresql+psycopg://...` |
+| `VECTOR_BACKEND` | `chroma` | `chroma` (nhúng trong tiến trình, dev) hoặc `pgvector` (cùng Postgres với `DATABASE_URL`) |
+| `MODEL_BACKEND` | `auto` | `torch` (fp32), `onnx` (int8) hoặc `auto` (dùng ONNX nếu đã chạy `scripts/export_onnx.py`) |
+| `DOCUMENT_STORAGE` | `local` | `local` (`data/raw`) hoặc `s3` (S3 / MinIO / R2), cùng `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` |
+| `INGEST_WORKER` | `inline` | `inline` (luồng trong API) hoặc `external` (`python -m src.worker` chạy riêng) |
+| `WATCH_DOCUMENTS` | `True` | Theo dõi `data/raw`, có thay đổi thì tự đồng bộ lại (chỉ với storage `local`) |
+| `RATE_LIMIT_PER_MINUTE` | `30` | Số câu hỏi tối đa mỗi phút cho mỗi client (IP hoặc token), 0 = tắt |
+| `ADMIN_TOKEN` | `""` | Bắt buộc cho `/api/documents*` khi được đặt (`Authorization: Bearer ...`). Để trống chỉ nên dùng khi dev |
+| `MAX_UPLOAD_MB` | `50` | Dung lượng tối đa mỗi file tải lên |
+| `LOG_JSON` | `False` | Log mỗi dòng một JSON (có `request_id`) cho Loki / ELK / Cloud Logging |
+| `METRICS_ENABLED` | `True` | Metric Prometheus tại `/metrics` |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` | `""` | Bật tracing Langfuse (Cloud hoặc tự host) khi có đủ khóa và đã `pip install langfuse` |
 
 ---
 
@@ -453,7 +489,9 @@ NVIDIA_API_KEY=nvapi-your-key-here
   source .venv/bin/activate
   uvicorn api.main:app --reload --port 8000
   ```
-> Khi khởi động, hệ thống quét `data/raw/` ở luồng nền (API trả lời được ngay), chunking và embedding file mới/đã sửa vào ChromaDB, đồng thời xóa chunk của file đã bị xóa hoặc thay đổi. Bạn có thể theo dõi tiến trình này ngay trên màn hình terminal console.
+> Khi khởi động, API xếp một job `sync` vào hàng đợi và worker nội tuyến xử lý nó ở luồng nền (API trả lời được ngay): file mới hoặc đã sửa được chunk và embed, chunk của file đã xóa bị gỡ khỏi index. Sau đó worker **theo dõi `data/raw`**: thêm, sửa hay xóa file thì khoảng 2 giây sau index được cập nhật, không cần khởi động lại. Có thể tải tài liệu lên qua `POST /api/documents` (mục 8).
+>
+> **Mô hình nhanh hơn (khuyến nghị):** chạy `python scripts/export_onnx.py` một lần (khoảng 5 phút, cần khoảng 5 GB RAM) để tạo mô hình ONNX int8 (0.57 GB mỗi mô hình thay vì 2.2 GB). Với `MODEL_BACKEND=auto` (mặc định), hệ thống tự dùng chúng và dựng index riêng `bge-m3-onnx-int8` ở lần chạy đầu.
 
 - Tài liệu tương tác API Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
@@ -487,7 +525,9 @@ Truy cập giao diện chat tại: http://localhost:5173
 - LLM suy luận (nemotron 3.5) mặc định tắt chế độ nghĩ (`LLM_ENABLE_THINKING=false`); bật lên có thể làm câu trả lời rỗng vì hết ngân sách token.
 
 ### 0. Streaming (`POST /api/query/stream`) — frontend dùng endpoint này
-Trả về Server-Sent Events: `stage` (routing/retrieving/synthesizing), `route`, nhiều `token` (chữ hiện dần), rồi một `final` chứa `QueryResponse` đầy đủ (nguồn, themes...) hoặc `error`. Câu chào/cảm ơn/"bạn là ai" đi đường tắt regex, không tốn lần gọi LLM phân loại. Route một agent stream trực tiếp; route nhiều agent chỉ stream sau bước tổng hợp (không stream được vì đầu ra là JSON).
+Trả về Server-Sent Events: `start` (chứa `request_id`), `stage` (routing/retrieving/synthesizing), `route`, nhiều `token` (chữ hiện dần), rồi một `final` chứa `QueryResponse` đầy đủ (nguồn, themes, `usage` token...) hoặc `cancelled` / `error`.
+
+**Dừng sinh câu trả lời:** `POST /api/query/{request_id}/cancel`, hoặc đơn giản là đóng kết nối. Graph dừng trước bước kế tiếp và lời gọi LLM đang stream bị cắt ngay, nên không trả thêm tiền token. Mọi phản hồi đều có header `X-Request-ID`, trùng với `request_id` trong log. Câu chào/cảm ơn/"bạn là ai" đi đường tắt regex, không tốn lần gọi LLM phân loại. Route một agent stream trực tiếp; route nhiều agent chỉ stream sau bước tổng hợp (không stream được vì đầu ra là JSON).
 
 ### 1. Truy vấn câu hỏi (`POST /api/query`)
 Xử lý câu hỏi đầy đủ qua LangGraph workflow:
@@ -539,6 +579,20 @@ Invoke-RestMethod -Uri "http://localhost:8000/api/query" -Method Post -ContentTy
 }
 ```
 
+### 1b. Quản lý tài liệu (`/api/documents`, `/api/ingest/sync`, `/api/jobs`)
+Cần header `Authorization: Bearer $ADMIN_TOKEN` khi `ADMIN_TOKEN` được đặt.
+```bash
+# Tải lên (202 Accepted): lưu vào kho tài liệu, đăng ký "pending", worker index ở nền
+curl -X POST http://localhost:8000/api/documents -F domain=general -F file=@info.txt
+# Danh sách + trạng thái: pending | indexing | ready | failed (kèm lỗi)
+curl http://localhost:8000/api/documents
+# Xóa (file + chunk), đồng bộ thủ công, xem job
+curl -X DELETE http://localhost:8000/api/documents/3
+curl -X POST http://localhost:8000/api/ingest/sync
+curl http://localhost:8000/api/jobs/12
+```
+Tên file bị làm sạch (chặn `../`), chỉ nhận `.pdf/.txt/.md/.docx` và tối đa `MAX_UPLOAD_MB`.
+
 ### 2. Kiểm tra quyết định định tuyến (`POST /api/route`)
 Xem trước Router Agent sẽ phân loại câu hỏi vào domain nào:
 ```bash
@@ -547,7 +601,11 @@ curl -X POST "http://localhost:8000/api/route" \
   -d '{"query": "Luật việt vị trong bóng đá được áp dụng thế nào?"}'
 ```
 
-### 3. Kiểm tra trạng thái hệ thống (`GET /api/health` & `GET /api/stats`)
+### 3. Kiểm tra trạng thái hệ thống (`/health/live`, `/health/ready`, `/metrics`, `/api/health`, `/api/stats`)
+- `GET /health/live`: tiến trình còn sống (dùng cho restart container).
+- `GET /health/ready`: 200 khi database, vector store, kho tài liệu, mô hình và API key đều sẵn sàng, ngược lại 503 (load balancer chỉ gửi traffic khi 200).
+- `GET /metrics`: metric Prometheus (độ trễ từng bước, thời gian tới token đầu, token LLM theo model, kết quả judge, job nạp tài liệu...).
+- Các endpoint `/query*` bị giới hạn `RATE_LIMIT_PER_MINUTE` mỗi client, vượt thì trả 429 kèm `Retry-After`.
 - Kiểm tra tính sẵn sàng của backend:
   ```bash
   curl http://localhost:8000/api/health
@@ -561,9 +619,11 @@ curl -X POST "http://localhost:8000/api/route" \
 
 ### 4. Chạy test
 ```bash
-python -m pytest -q
+python -m pytest -q                      # toàn bộ (cần mô hình + kho tech đã nạp)
+python -m pytest -q -m "not models"      # không cần mô hình (giống CI)
+TEST_PG_URL=postgresql+psycopg://... python -m pytest -q tests/test_infra.py   # thêm test pgvector + hàng đợi Postgres
 ```
-Test dùng LLM giả nhưng kho vector, embedding và reranker thật (cần đã nạp `data/raw/tech`).
+Test dùng LLM giả nhưng kho vector, embedding và reranker thật (cần đã nạp `data/raw/tech`). Test hạ tầng dùng DB SQLite tạm, backend vector trong bộ nhớ và S3 giả lập (`moto`).
 
 Đánh giá chất lượng với LLM thật (xem mục 4.5): `python -m src.evaluation.run`.
 
@@ -594,7 +654,7 @@ for source in result["sources"]:
 
 ## 10. Tiến Độ Dự Án
 
-> Cập nhật: 20/11/2026 · Test: **112/112 passed** (`python -m pytest -q`, ~2 phút 30 giây)
+> Cập nhật: 20/11/2026 · Test: **130 passed** (`python -m pytest -q` với `TEST_PG_URL`; không có Postgres thì 128 passed, 2 skipped)
 
 ### Các mốc đã hoàn thành (theo lịch sử commit)
 
@@ -612,13 +672,14 @@ for source in result["sources"]:
 | 10 | `9f343e6` | Đổi domain finance sang sport, sơ đồ README bằng Mermaid |
 | 11 | `3b1df32` | Evaluation: LLM judge, vòng tự sửa, eval offline, RAGAS |
 | 12 | `5a3b328` | Truy xuất xuyên ngôn ngữ: dịch Việt ↔ Anh trong expansion, rerank cùng ngôn ngữ |
-| 13 | (commit này) | Giảm độ trễ (router gọn, expansion song song, 8 ứng viên rerank); Supervisor truyền lịch sử hội thoại |
+| 13 | `2522f79` | Giảm độ trễ (router gọn, expansion song song, 8 ứng viên rerank); Supervisor truyền lịch sử hội thoại |
+| 14 | (commit này) | Phase 4 hạ tầng: pgvector, ONNX int8, worker + hàng đợi, S3, API tài liệu, dừng sinh, rate limit, metric/log/tracing, Docker, CI |
 
 ### Trạng thái theo thành phần
 
 | Thành phần | Trạng thái | Ghi chú |
 | :-- | :-- | :-- |
-| Ingestion tự động (PDF/TXT/MD/DOCX, manifest, xóa chunk cũ) | ✅ Hoàn thành | Chạy nền khi khởi động |
+| Ingestion tự động (PDF/TXT/MD/DOCX, bảng `documents`, xóa chunk cũ) | ✅ Hoàn thành | Worker + hàng đợi; theo dõi thư mục; upload qua API; local hoặc S3 |
 | Hybrid retrieval (vector + BM25, weighted RRF) | ✅ Hoàn thành | |
 | Cross-encoder rerank + ngưỡng liên quan | ✅ Hoàn thành | |
 | Fallback 3 tầng (domain chính → domain khác → web) | ✅ Hoàn thành | |
@@ -628,9 +689,10 @@ for source in result["sources"]:
 | Web Agent (DuckDuckGo) | ✅ Hoàn thành | `WebScraperTool` có sẵn nhưng Web Agent chưa dùng |
 | Supervisor (song song) + Synthesizer (đánh số nguồn toàn cục) | ✅ Hoàn thành | Agent con nhận lịch sử hội thoại và context của luồng gọi (stream event, tracing) |
 | Tool Agent qua MCP | ✅ Hoàn thành | Chỉ đọc; chặn SSRF; tối đa 5 vòng |
-| Bộ nhớ hội thoại | ✅ Hoàn thành | Chưa có xác thực người dùng |
+| Bộ nhớ hội thoại | ✅ Hoàn thành | SQLite hoặc Postgres; lưu token đã dùng mỗi câu trả lời. Chưa có xác thực người dùng |
+| Hạ tầng (Phase 4) | ✅ Hoàn thành | pgvector, ONNX int8, Docker Compose, CI, metric / log / tracing; xem mục 11 |
 | Streaming SSE + React UI | ✅ Hoàn thành | Theme sáng/tối, lịch sử hội thoại, trạng thái API |
-| Kiểm thử tự động | ✅ 112 test | API, workflow, MCP, memory, đa ngôn ngữ, evaluation, contextual/rerank, unit |
+| Kiểm thử tự động | ✅ 130 test | API, workflow, MCP, memory, đa ngôn ngữ, evaluation, contextual/rerank, unit, hạ tầng (hàng đợi, sync, S3, pgvector, huỷ, rate limit) |
 | Đánh giá chất lượng (LLM judge + tự sửa + eval offline + RAGAS) | ✅ Hoàn thành | 24 câu chuẩn (18 sport, 6 tech), xem bảng kết quả bên dưới |
 | Truy xuất xuyên ngôn ngữ (Việt ↔ Anh) | ✅ Hoàn thành | Expansion có bản dịch, rerank cùng ngôn ngữ. Contextual chunk đã thử, không cải thiện nên mặc định tắt |
 
@@ -665,6 +727,18 @@ Cấu hình mặc định, 24 câu, LLM `nemotron-3.5-lightning-30b-a3b`. Thang 
 
 Sau tối ưu, chất lượng giữ nguyên: route 100%, hit rate 0.96, MRR 0.90, faithfulness 4.96/5, pass rate 1.00.
 
+**Phase 4: pgvector + ONNX int8 (eval chỉ đo truy xuất, cùng code, 24 câu):**
+
+| Cấu hình | Hit rate | MRR | Precision | Độ trễ TB / câu (sport) | Độ trễ TB / câu (tech) |
+| :-- | :-- | :-- | :-- | :-- | :-- |
+| Chroma + bge-m3 / reranker fp32 (torch) | 0.958 | 0.896 | 0.57 | 5.84s (max 20.3s) | 11.22s |
+| **pgvector + ONNX int8 (mặc định khi đã export)** | **0.958** | **0.896** | **0.57** | **3.64s** (max 7.8s) | **3.41s** |
+
+- Thứ hạng từng câu giống hệt nhau giữa fp32 và int8; cosine embedding fp32 với int8 là 0.986 – 0.989.
+- Mô hình: 2 × 2.27 GB xuống 2 × 0.57 GB. Image backend 1.23 GB (không torch).
+- Nạp lại toàn bộ 7 tài liệu (1,510 chunk): khoảng 20 phút (fp32) xuống 283 giây (int8).
+- Container API (ONNX, 1 worker): sẵn sàng sau khoảng 28 giây; câu hỏi sport có token đầu tiên sau 4.0 giây, xong sau 7.9 giây, judge 5/5/5; huỷ sau token thứ 5 thì luồng kết thúc với sự kiện `cancelled` sau 3.2 giây tính từ lúc gửi câu hỏi (chỉ 1 lần gọi LLM bị tính).
+
 ### Việc còn tồn đọng / đề xuất tiếp theo
 
 - **Dữ liệu:** bổ sung tài liệu cho `data/raw/general`; mở rộng bộ eval (hiện 24 câu, nên lên 50–100 câu).
@@ -673,5 +747,74 @@ Sau tối ưu, chất lượng giữ nguyên: route 100%, hit rate 0.96, MRR 0.9
 - **Code chưa nối vào hệ thống:** `src/tools/calculator_tool.py`, `src/tools/search_tools.py`, `DocumentLoader`, `VectorStoreBuilder`, `CacheManager`, `POWERFUL_LLM_MODEL` (có thể nối thành tool cho agent hoặc xóa bớt).
 - **Route đa miền:** câu trả lời của các agent chạy song song không được stream; chỉ bản tổng hợp cuối cùng được gửi về.
 - **API:** trường `domain` trong `QueryRequest` chưa được dùng; `/api/stats` trả `uptime = 0` và danh sách agent chưa có `tools`.
-- **Bảo mật / vận hành:** chưa có xác thực, ai có `conversation_id` đều đọc được hội thoại; cấu hình MCP chỉ nạp lúc khởi động.
-- **Chưa có:** upload tài liệu qua API/UI, Docker/CI, tracing (Langfuse/LangSmith).
+- **Bảo mật (Phase 5):** chưa có đăng nhập; ai có `conversation_id` đều đọc được hội thoại (bảng đã có cột `user_id` để thêm sau); guardrail chống prompt injection, lọc PII.
+- **Frontend:** API đã có nút dừng (`/api/query/{id}/cancel`) và quản lý tài liệu (`/api/documents`) nhưng giao diện chưa có nút "Dừng" và trang "Tài liệu".
+- **Giới hạn lượt gọi** hiện tính theo từng tiến trình (N worker = tối đa N lần giới hạn); cần Redis khi chạy nhiều máy.
+- **MCP** tắt trong container (image không có Node/uvx); bật lại cần image có `npx`/`uvx`.
+- **Eval gate** chỉ chạy được trên runner self-hosted (tài liệu sport không được đưa lên git).
+
+---
+
+## 11. Hạ Tầng & Triển Khai Production
+
+Phase 4 đưa hệ thống từ "một tiến trình trên laptop" lên kiến trúc chạy được nhiều bản sao, cập nhật tài liệu không cần khởi động lại, đo lường và triển khai tự động.
+
+```mermaid
+flowchart LR
+    B(["Trình duyệt"]) -->|":8080"| W["web<br/>nginx + React build<br/>(SSE không buffer)"]
+    W -->|"/api, /health"| A["api × N<br/>FastAPI + LangGraph<br/>ONNX int8"]
+    A --> P[("postgres + pgvector<br/>hội thoại · documents<br/>ingest_jobs · chunks")]
+    A -->|"upload"| S[("MinIO / S3<br/>tài liệu gốc · mô hình")]
+    A -->|"enqueue"| P
+    K["worker<br/>python -m src.worker"] -->|"SKIP LOCKED"| P
+    K --> S
+    M["migrate<br/>alembic upgrade head"] --> P
+    PR["prometheus"] -->|"/metrics"| A
+    GF["grafana"] --> PR
+    A -.->|"trace (tuỳ chọn)"| LF["Langfuse"]
+    A -.-> NIM["NVIDIA NIM"]
+```
+
+### Các quyết định chính
+
+| Vấn đề | Giải pháp | Lý do |
+| :-- | :-- | :-- |
+| Kho vector chỉ dùng được trong 1 tiến trình | **pgvector** (HNSW cosine, `iterative_scan` để lọc theo domain) | Cùng một Postgres với hội thoại và danh mục tài liệu: thay chunk của một file trong **một transaction**, sao lưu bằng một lệnh `pg_dump`, dịch vụ managed có ở mọi cloud |
+| Mô hình 4.4 GB RAM, rerank chậm | **ONNX Runtime int8** (`scripts/export_onnx.py`) | Chất lượng giữ nguyên, nhanh hơn 1.6 – 3.3 lần, image không cần torch |
+| Nạp tài liệu chặn API | **Hàng đợi `ingest_jobs` trên Postgres** (`FOR UPDATE SKIP LOCKED`) + worker riêng | Không thêm broker; nhiều worker không lấy trùng job; job lỗi được thử lại; job treo được xếp lại hàng |
+| Tài liệu nằm trên ổ máy | **Kho S3** (MinIO / AWS S3 / R2), nhận diện thay đổi bằng ETag | Mọi bản sao API và worker dùng chung; container không giữ dữ liệu quan trọng |
+| Phải khởi động lại để cập nhật | Watcher thư mục (dev), `POST /api/documents` + `/api/ingest/sync` | Đúng như yêu cầu "tự cập nhật thông tin để truy xuất" |
+| Người dùng không dừng được câu trả lời | `RunContext` truyền qua config của LangGraph, kiểm tra trong vòng lặp stream token | Dừng là dừng trả tiền token ngay |
+| Không biết hệ thống đang chậm ở đâu | Prometheus + Grafana dashboard, log JSON có `request_id`, Langfuse (tuỳ chọn) | Thấy được độ trễ từng bước, token theo model, tỉ lệ lỗi |
+| Lạm dụng API | Rate limit theo client + `limit_req` ở nginx, giới hạn upload, `ADMIN_TOKEN` cho API tài liệu | |
+| Deploy thủ công | GitHub Actions: test + migration trên pgvector thật, build/push image lên GHCR, eval gate | |
+
+### Chạy cả hệ thống bằng Docker Compose
+
+```bash
+python scripts/export_onnx.py      # một lần: tạo data/models/onnx (cần torch, khoảng 5 phút)
+cp .env.example .env               # điền NVIDIA_API_KEY, POSTGRES_PASSWORD, MINIO_ROOT_PASSWORD, ADMIN_TOKEN
+docker compose up -d --build       # http://localhost:8080
+docker compose --profile monitoring up -d   # Prometheus :9090, Grafana :3000 (dashboard "Multi-RAG Agent")
+
+# Đưa tài liệu vào (lưu ở MinIO, worker tự index):
+curl -X POST http://localhost:8080/api/documents -H "Authorization: Bearer $ADMIN_TOKEN" \
+     -F domain=sport -F "file=@Laws of the Game.pdf"
+```
+
+- Dịch vụ `migrate` chạy `alembic upgrade head` một lần trước khi `api` và `worker` khởi động.
+- Chỉ cổng web được mở ra ngoài; Prometheus và Grafana chỉ nghe trên `127.0.0.1`.
+- Mỗi worker API nạp mô hình một lần (khoảng 1.3 GB với int8). Số worker đặt bằng `WEB_CONCURRENCY`.
+- Lên cloud: thay `postgres` bằng Postgres managed có pgvector (RDS, Cloud SQL, Azure, Supabase, Neon), `minio` bằng S3/R2/GCS, và đặt `MODELS_S3_PREFIX` để container tự tải mô hình từ bucket (`python scripts/sync_models.py push` một lần).
+- Image backend mặc định dựa trên `ghcr.io/astral-sh/uv:python3.11-bookworm-slim`; đổi bằng `BACKEND_BASE_IMAGE`.
+
+### Chế độ chạy
+
+| | Dev (mặc định, không cần Docker) | Production (compose) |
+| :-- | :-- | :-- |
+| DB | SQLite `data/memory.db` | PostgreSQL |
+| Vector | Chroma (`data/vectorstores`) | pgvector |
+| Mô hình | `auto` (ONNX nếu đã export, không thì torch) | ONNX int8 |
+| Tài liệu | `data/raw` + watcher | S3 / MinIO + API upload |
+| Worker | luồng trong API | container `worker` riêng |
+| Log | text | JSON |

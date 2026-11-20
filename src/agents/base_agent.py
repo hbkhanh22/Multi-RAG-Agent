@@ -5,12 +5,14 @@ Base Agent Class - Abstract base for all agents
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List
 import logging
+import time
 from datetime import datetime
 
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 from config.settings import settings
+from src import runtime
 
 logger = logging.getLogger(__name__)
 
@@ -84,21 +86,54 @@ class BaseAgent(ABC):
                 else:
                     message_list.append(msg)
             
+            runtime.check_cancelled()
+            started = time.time()
             if on_token is None:
-                return self.llm.invoke(message_list).content
+                msg = self.llm.invoke(message_list)
+                content = msg.content if isinstance(msg.content, str) else ""
+                self._record_usage(message_list, content, getattr(msg, "usage_metadata", None), started)
+                return content
 
-            # Streaming: forward text chunks as they arrive, return the full text
+            # Streaming: forward text chunks as they arrive, return the full text.
+            # Stops early (raises Cancelled) when the user cancels the request.
             parts: List[str] = []
+            usage = None
             for chunk in self.llm.stream(message_list):
+                if getattr(chunk, "usage_metadata", None):
+                    usage = chunk.usage_metadata
                 text = chunk.content if isinstance(chunk.content, str) else ""
                 if text:
                     parts.append(text)
                     on_token(text)
-            return "".join(parts)
+                runtime.check_cancelled()
+            content = "".join(parts)
+            self._record_usage(message_list, content, usage, started)
+            return content
+        except runtime.Cancelled:
+            logger.info(f"{self.name}: generation cancelled")
+            raise
         except Exception as e:
             logger.error(f"Error invoking LLM: {e}")
             raise
     
+    def _record_usage(self, message_list, content: str, usage, started: float) -> None:
+        """Token accounting per request (RunContext) and per model (Prometheus)."""
+        try:
+            estimated = not usage
+            if usage:
+                prompt = int(usage.get("input_tokens") or 0)
+                completion = int(usage.get("output_tokens") or 0)
+            else:  # provider did not report usage: ~4 characters per token
+                chars = sum(len(m.content) for m in message_list if isinstance(m.content, str))
+                prompt, completion = chars // 4, len(content) // 4
+            ctx = runtime.current()
+            if ctx is not None:
+                ctx.add_usage(self.model, prompt, completion, estimated)
+            from src.observability import metrics
+            metrics.record_llm_call(self.model, self.name, prompt, completion, time.time() - started)
+        except Exception as e:  # accounting must never break an answer
+            logger.debug(f"usage accounting failed: {e}")
+
     def process_input(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Process and validate input data

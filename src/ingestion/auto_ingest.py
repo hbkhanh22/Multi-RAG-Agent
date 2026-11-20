@@ -1,63 +1,50 @@
 """
-Auto Ingestion Module
+Document synchronisation: storage (local data/raw or S3) -> vector index.
 
-Scans data/raw/{domain} on startup, chunks and embeds new/modified documents
-into the Chroma stores, and removes chunks of files that changed or vanished.
+`sync_documents()` compares the files in storage with the `documents` registry of the
+current index (embedding model + runtime + version):
+  * new / modified files   -> load, chunk, embed, replace their chunks, mark "ready"
+  * files that disappeared -> their chunks and registry rows are removed
+  * unchanged files        -> skipped (size + mtime, or S3 ETag)
 
-Manifest keys are project-relative POSIX paths, so the manifest stays valid if
-the project folder is moved. Stale chunks are deleted by `filename` before a
-changed file is re-embedded, which prevents duplicate chunks.
+It runs at startup, after uploads/deletes (as queued jobs) and whenever the folder
+watcher sees a change. A process lock (+ a Postgres advisory lock across processes)
+guarantees only one sync runs at a time.
+
+The old JSON manifest (data/vectorstores/.ingested_manifest.<index>.json) is imported
+once into the registry so an existing Chroma index is not re-embedded.
 """
 
 import json
 import logging
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, Tuple
+from typing import Any, Dict, List, Optional
 
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from sqlalchemy import delete, insert, select, text, update
 
-from config.settings import settings, BASE_DIR
+from config.settings import settings
 from src.ingestion.chunker import DocumentChunker
 from src.ingestion.contextualizer import PageContextualizer, add_chunk_headers
-from src.retrieval import vector_store_manager
-from src.retrieval.vector_store import embedding_slug
+from src.storage.db import documents, get_engine, utcnow
+from src.storage.objects import StoredFile, get_storage
 
 logger = logging.getLogger(__name__)
 
-MANIFEST_FILE = (
-    Path(settings.data_dir) / "vectorstores" / f".ingested_manifest.{embedding_slug()}.json"
-)
+_sync_lock = threading.Lock()
+_ADVISORY_KEY = 727_001   # arbitrary app-wide id for pg_advisory_lock
 
 
-def _rel_key(path: Path) -> str:
-    """Project-relative POSIX path used as manifest key (absolute if outside project)."""
-    path = Path(path)
-    try:
-        return path.resolve().relative_to(BASE_DIR).as_posix()
-    except ValueError:
-        return path.resolve().as_posix()
+def _index_name() -> str:
+    from src.retrieval.vector_store import embedding_slug
+    return embedding_slug()
 
 
-def _load_manifest() -> Dict[str, Any]:
-    """Load manifest; migrates legacy absolute-path keys to relative ones."""
-    if not MANIFEST_FILE.exists():
-        return {}
-    try:
-        with open(MANIFEST_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except Exception as e:
-        logger.warning(f"Failed to read ingestion manifest, recreating: {e}")
-        return {}
-    return {_rel_key(Path(k)): v for k, v in raw.items()}
-
-
-def _save_manifest(manifest: Dict[str, Any]) -> None:
-    try:
-        MANIFEST_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(MANIFEST_FILE, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Failed to save ingestion manifest: {e}")
+def _legacy_manifest_file() -> Path:
+    return Path(settings.data_dir) / "vectorstores" / f".ingested_manifest.{_index_name()}.json"
 
 
 def _load_single_document(file_path: Path):
@@ -78,113 +65,209 @@ def _load_single_document(file_path: Path):
     return []
 
 
-def _iter_files() -> Iterator[Tuple[str, Path]]:
-    """Yield (domain, file) for every supported file under data/raw."""
-    supported = {e.lower() for e in settings.supported_file_types}
-    folders = {
-        "sport": Path(settings.sport_data_path),
-        "tech": Path(settings.tech_data_path),
-        "general": Path(settings.general_data_path),
-    }
-    for domain, folder in folders.items():
-        folder.mkdir(parents=True, exist_ok=True)
-        for file_path in sorted(folder.glob("**/*")):
-            if file_path.is_file() and file_path.suffix.lower() in supported:
-                yield domain, file_path
+# ------------------------------------------------------------------ registry
 
-    # Loose files directly in data/raw are treated as "general"
-    raw_root = Path(settings.data_dir) / "raw"
-    if raw_root.exists():
-        for file_path in sorted(raw_root.glob("*")):
-            if file_path.is_file() and file_path.suffix.lower() in supported:
-                yield "general", file_path
+def list_documents(index_name: Optional[str] = None) -> List[Dict[str, Any]]:
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            select(documents).where(documents.c.index_name == (index_name or _index_name()))
+            .order_by(documents.c.domain, documents.c.filename)
+        ).all()
+    out = []
+    for r in rows:
+        d = dict(r._mapping)
+        for k in ("created_at", "updated_at"):
+            if d.get(k) is not None:
+                d[k] = d[k].isoformat()
+        out.append(d)
+    return out
 
 
-def auto_ingest_raw_documents() -> Dict[str, int]:
-    """
-    Synchronise data/raw with the vector stores.
+def get_document(doc_id: int) -> Optional[Dict[str, Any]]:
+    with get_engine().connect() as conn:
+        row = conn.execute(select(documents).where(documents.c.id == doc_id)).first()
+    return dict(row._mapping) if row else None
 
-    - new / modified files are (re-)embedded (old chunks removed first)
-    - files that disappeared have their chunks removed
-    """
-    logger.info("Checking data/raw for documents to ingest...")
 
-    manifest = _load_manifest()
-    chunker = DocumentChunker(chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)
-    stats = {"sport": 0, "tech": 0, "general": 0, "removed": 0, "total_chunks": 0}
+def mark_pending(domain: str, key: str, filename: str, size: int, user_id: Optional[str] = None) -> int:
+    """Register an uploaded file immediately (status "pending") so the UI can show it."""
+    index = _index_name()
+    now = utcnow()
+    with get_engine().begin() as conn:
+        row = conn.execute(select(documents.c.id).where(
+            documents.c.index_name == index, documents.c.source_key == key)).first()
+        if row:
+            conn.execute(update(documents).where(documents.c.id == row.id).values(
+                status="pending", size=size, error=None, updated_at=now))
+            return row.id
+        return conn.execute(insert(documents).values(
+            index_name=index, source_key=key, domain=domain, filename=filename, size=size,
+            status="pending", chunks_count=0, user_id=user_id, created_at=now, updated_at=now,
+        )).inserted_primary_key[0]
+
+
+def _import_legacy_manifest(conn, index: str) -> int:
+    """One-time migration from the JSON manifest (Chroma only: its chunks exist)."""
+    path = _legacy_manifest_file()
+    if settings.vector_backend != "chroma" or not path.exists():
+        return 0
+    if conn.execute(select(documents.c.id).where(documents.c.index_name == index).limit(1)).first():
+        return 0
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"Cannot read legacy manifest {path.name}: {e}")
+        return 0
+    now = utcnow()
+    for key, e in manifest.items():
+        conn.execute(insert(documents).values(
+            index_name=index, source_key=Path(key).as_posix(), domain=e.get("domain", "general"),
+            filename=e.get("filename", Path(key).name), size=e.get("size", 0), mtime=e.get("mtime"),
+            status="ready", chunks_count=e.get("chunks_count", 0), created_at=now, updated_at=now,
+        ))
+    logger.info(f"Imported {len(manifest)} entries from legacy manifest {path.name}")
+    return len(manifest)
+
+
+# ------------------------------------------------------------------ sync
+
+@contextmanager
+def _exclusive():
+    """One sync at a time: in this process (lock) and across processes (Postgres)."""
+    with _sync_lock:
+        engine = get_engine()
+        if engine.dialect.name != "postgresql":
+            yield
+            return
+        with engine.connect() as conn:
+            conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": _ADVISORY_KEY})
+            try:
+                yield
+            finally:
+                conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _ADVISORY_KEY})
+                conn.commit()
+
+
+def _ingest_file(f: StoredFile, row, index: str, chunker, storage, state: Dict[str, Any]) -> int:
+    from src.retrieval import vector_store_manager
+
+    engine = get_engine()
+    now = utcnow()
+    with engine.begin() as conn:
+        if row is None:
+            doc_id = conn.execute(insert(documents).values(
+                index_name=index, source_key=f.key, domain=f.domain, filename=f.filename, size=f.size,
+                mtime=f.mtime, etag=f.etag, status="indexing", created_at=now, updated_at=now,
+            )).inserted_primary_key[0]
+        else:
+            doc_id = row.id
+            conn.execute(update(documents).where(documents.c.id == doc_id).values(
+                status="indexing", error=None, updated_at=now))
+
+    try:
+        with storage.open_local(f) as path:
+            docs = _load_single_document(path)
+        if not docs:
+            raise ValueError("no text could be extracted")
+        for d in docs:
+            d.metadata["domain"] = f.domain
+            d.metadata["filename"] = f.filename
+            d.metadata["source"] = f.key
+        if settings.contextual_chunks:
+            state["contextualizer"] = state.get("contextualizer") or PageContextualizer()
+            state["contextualizer"].contextualize(docs, f.key, f.size, f.mtime or 0)
+        chunks = chunker.chunk(docs)
+        if settings.contextual_chunks:
+            add_chunk_headers(chunks)
+        if not chunks:
+            raise ValueError("document produced no chunks")
+
+        # the chunks of an older version are replaced (and of a moved file, removed)
+        if row is not None and (row.domain != f.domain or row.filename != f.filename):
+            vector_store_manager.delete_by_filename(row.domain, row.filename)
+        n = vector_store_manager.replace_file(f.domain, f.filename, chunks)
+
+        with engine.begin() as conn:
+            conn.execute(update(documents).where(documents.c.id == doc_id).values(
+                status="ready", chunks_count=n, size=f.size, mtime=f.mtime, etag=f.etag,
+                domain=f.domain, filename=f.filename, error=None, updated_at=utcnow()))
+        logger.info(f"Indexed {f.filename} ({n} chunks) into '{f.domain}'")
+        return n
+    except Exception as e:
+        logger.error(f"Error ingesting {f.filename}: {e}", exc_info=True)
+        with engine.begin() as conn:
+            conn.execute(update(documents).where(documents.c.id == doc_id).values(
+                status="failed", error=str(e)[:2000], size=f.size, mtime=f.mtime, etag=f.etag,
+                updated_at=utcnow()))
+        return -1
+
+
+def sync_documents() -> Dict[str, int]:
+    """Bring the vector index in line with the document storage."""
+    from src.observability import metrics
+    from src.retrieval import vector_store_manager
+
+    started = time.time()
+    storage = get_storage()
+    index = _index_name()
+    stats = {"sport": 0, "tech": 0, "general": 0, "removed": 0, "failed": 0, "total_chunks": 0, "unchanged": 0}
     max_bytes = settings.max_file_size_mb * 1024 * 1024
-    contextualizer = None  # created on first use (LLM client)
 
-    present = set()
-    for domain, file_path in _iter_files():
-        key = _rel_key(file_path)
-        present.add(key)
-        stat = file_path.stat()
+    with _exclusive():
+        engine = get_engine()
+        with engine.begin() as conn:
+            _import_legacy_manifest(conn, index)
+            rows = {r.source_key: r for r in conn.execute(
+                select(documents).where(documents.c.index_name == index)).all()}
 
-        entry = manifest.get(key)
-        if entry and entry.get("mtime") == stat.st_mtime and entry.get("size") == stat.st_size:
-            continue  # unchanged
-
-        if stat.st_size > max_bytes:
-            logger.warning(f"Skipping {file_path.name}: larger than {settings.max_file_size_mb} MB")
-            continue
-
-        logger.info(f"Ingesting new/modified document: {file_path.name} into '{domain}' store")
-        try:
-            docs = _load_single_document(file_path)
-            if not docs:
-                logger.warning(f"No content extracted from {file_path.name}")
+        chunker = DocumentChunker(chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)
+        state: Dict[str, Any] = {}
+        present = set()
+        for f in storage.list_files():
+            present.add(f.key)
+            row = rows.get(f.key)
+            unchanged = (
+                row is not None and row.status == "ready"
+                and (row.size, row.etag if f.etag else row.mtime) == f.version()
+            )
+            if unchanged:
+                stats["unchanged"] += 1
                 continue
-
-            for d in docs:
-                d.metadata["domain"] = domain
-                d.metadata["filename"] = file_path.name
-                d.metadata["source"] = key
-
-            if settings.contextual_chunks:
-                contextualizer = contextualizer or PageContextualizer()
-                contextualizer.contextualize(docs, key, stat.st_size, stat.st_mtime)
-
-            chunks = chunker.chunk(docs)
-            if not chunks:
+            if row is not None and row.status == "failed" and (row.size, row.etag if f.etag else row.mtime) == f.version():
+                stats["unchanged"] += 1      # same broken file: do not retry on every sync
                 continue
-            if settings.contextual_chunks:
-                add_chunk_headers(chunks)
+            if f.size > max_bytes:
+                logger.warning(f"Skipping {f.filename}: larger than {settings.max_file_size_mb} MB")
+                continue
+            n = _ingest_file(f, row, index, chunker, storage, state)
+            if n < 0:
+                stats["failed"] += 1
+                metrics.record_ingested("failed")
+            else:
+                stats[f.domain] += 1
+                stats["total_chunks"] += n
+                metrics.record_ingested("ready")
 
-            # Remove stale chunks of a previous version before adding the new ones
-            if entry:
-                vector_store_manager.delete_by_filename(entry.get("domain", domain), file_path.name)
-
-            if vector_store_manager.add_documents(domain, chunks):
-                manifest[key] = {
-                    "domain": domain,
-                    "filename": file_path.name,
-                    "mtime": stat.st_mtime,
-                    "size": stat.st_size,
-                    "chunks_count": len(chunks),
-                }
-                stats[domain] += 1
-                stats["total_chunks"] += len(chunks)
-                logger.info(f"Embedded {file_path.name} ({len(chunks)} chunks) into '{domain}'")
-        except Exception as e:
-            logger.error(f"Error ingesting {file_path.name}: {e}", exc_info=True)
-
-    # Files deleted from disk -> remove their chunks and manifest entries
-    for key in [k for k in manifest if k not in present]:
-        entry = manifest.pop(key)
-        removed = vector_store_manager.delete_by_filename(entry.get("domain", "general"), entry.get("filename", ""))
-        stats["removed"] += 1
-        logger.info(f"Removed {removed} chunks of deleted file: {entry.get('filename')}")
-
-    _save_manifest(manifest)
+        for key, row in rows.items():
+            if key in present:
+                continue
+            removed = vector_store_manager.delete_by_filename(row.domain, row.filename)
+            with engine.begin() as conn:
+                conn.execute(delete(documents).where(documents.c.id == row.id))
+            stats["removed"] += 1
+            logger.info(f"Removed {removed} chunks of deleted file: {row.filename}")
 
     ingested = stats["sport"] + stats["tech"] + stats["general"]
-    if ingested or stats["removed"]:
+    if ingested or stats["removed"] or stats["failed"]:
         logger.info(
-            f"Auto-ingestion completed: {ingested} documents ({stats['total_chunks']} chunks) added, "
-            f"{stats['removed']} removed."
+            f"Sync completed in {time.time() - started:.1f}s: {ingested} documents "
+            f"({stats['total_chunks']} chunks) indexed, {stats['removed']} removed, {stats['failed']} failed."
         )
     else:
         logger.info("Vector stores are up-to-date.")
-
     return stats
+
+
+def auto_ingest_raw_documents() -> Dict[str, int]:
+    """Backward-compatible name for sync_documents()."""
+    return sync_documents()
