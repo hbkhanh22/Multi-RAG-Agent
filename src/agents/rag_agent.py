@@ -44,7 +44,9 @@ class RAGAgent(BaseAgent):
             if not query:
                 return {"success": False, "answer": "No query provided", "sources": [], "domain": self.domain}
 
-            documents, retrieved_count, fallback = self._gather_context(query)
+            documents, retrieved_count, fallback = self._gather_context(
+                query, input_data.get("expanded_queries") or None
+            )
             answer, citations = self._generate(
                 query, documents, input_data.get("on_token"), input_data.get("history", "")
             )
@@ -71,7 +73,7 @@ class RAGAgent(BaseAgent):
                 "error": str(e),
             }
 
-    def _gather_context(self, query: str) -> Tuple[List[Document], int, str]:
+    def _gather_context(self, query: str, expanded: List[str] = None) -> Tuple[List[Document], int, str]:
         """
         Return (documents, retrieved_count, fallback_used).
 
@@ -80,7 +82,7 @@ class RAGAgent(BaseAgent):
         neighbours, relevant or not, so without this the fallbacks never fire.
         """
         # 1) Own domain (with query expansion; the rewrites include a vi<->en translation)
-        candidates, variants = self._retrieve(query, self.domain, expand=True)
+        candidates, variants = self._retrieve(query, self.domain, expand=True, expanded=expanded)
         retrieved_count = len(candidates)
         relevant = self._select_relevant(query, candidates, variants)
         if relevant:
@@ -108,13 +110,16 @@ class RAGAgent(BaseAgent):
 
     # ------------------------------------------------------------ retrieval
 
-    def _retrieve(self, query: str, domain: str, expand: bool) -> Tuple[List[Document], List[str]]:
+    def _retrieve(self, query: str, domain: str, expand: bool,
+                  expanded: List[str] = None) -> Tuple[List[Document], List[str]]:
         """Hybrid-search a domain (optionally for several expanded queries) and dedupe.
 
         Returns (candidates, query variants used)."""
         try:
             queries = [query]
-            if expand:
+            if expand and expanded and expanded[0] == query:
+                queries = list(expanded)  # already expanded while routing
+            elif expand:
                 queries = query_expander.get_expanded_queries(
                     query, domain=domain, expansion_types=["multi_query"]
                 )

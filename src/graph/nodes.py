@@ -6,7 +6,9 @@ and returning the whole state would re-apply reducers (e.g. `messages` uses
 operator.add) and duplicate data.
 """
 
+import contextvars
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List
 
 from langchain_core.messages import AIMessage
@@ -18,6 +20,7 @@ from src.graph.state import AgentState
 from src.utils import Timer
 from src.memory import condense_prompt, format_history, history_to_messages, needs_condense
 from src.agents.router_agent import fast_route
+from src.retrieval import query_expander
 from src.evaluation.judge import AnswerJudge, AnswerRefiner
 from config.settings import settings
 
@@ -95,8 +98,21 @@ def router_node(state: AgentState) -> Dict[str, Any]:
     logger.info("=== ROUTER NODE ===")
     emit({"type": "stage", "stage": "routing"})
 
-    with Timer("Router"):
-        result = router_agent.run({"query": _q(state)})
+    query = _q(state)
+    expanded: List[str] = []
+    if settings.parallel_expansion and not fast_route(query):
+        # Expansion does not depend on the route: run it during the router LLM call
+        with Timer("Router + expansion"), ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(contextvars.copy_context().run, query_expander.get_expanded_queries,
+                              query, None, ["multi_query"])
+            result = router_agent.run({"query": query})
+            try:
+                expanded = fut.result()
+            except Exception as e:  # the agents fall back to expanding themselves
+                logger.warning(f"Parallel expansion failed: {e}")
+    else:
+        with Timer("Router"):
+            result = router_agent.run({"query": query})
 
     route = result.get("route", "general")
     agents = result.get("agents", ["general"])
@@ -107,6 +123,7 @@ def router_node(state: AgentState) -> Dict[str, Any]:
         "route": route,
         "active_agents": agents,
         "router_confidence": result.get("confidence", 0.5),
+        "expanded_queries": expanded,
     }
 
 
@@ -117,6 +134,7 @@ def _run_agent(name: str, agent, state: AgentState) -> Dict[str, Any]:
         result = agent.run({
             "query": _q(state),
             "history": format_history(state.get("history") or []),
+            "expanded_queries": state.get("expanded_queries") or [],
             "on_token": lambda t: emit({"type": "token", "text": t}),
             "on_event": emit,
         })
@@ -160,6 +178,9 @@ def supervisor_node(state: AgentState) -> Dict[str, Any]:
         result = supervisor_agent.run({
             "query": _q(state),
             "active_agents": state["active_agents"],
+            "history": format_history(state.get("history") or []),
+            "expanded_queries": state.get("expanded_queries") or [],
+            "on_event": emit,
         })
 
     return {"agent_responses": result.get("agent_responses", {})}

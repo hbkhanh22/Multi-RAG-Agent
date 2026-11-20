@@ -20,6 +20,7 @@ class AgentState(TypedDict):
     query: str
     history: List[Dict[str, str]]  # earlier turns [{role, content}], oldest first
     standalone_query: str  # query rewritten to need no history (routing/retrieval use it)
+    expanded_queries: List[str]  # multi-query rewrites computed while routing ([] = not computed)
     
     # ========== Routing ==========
     route: str  # "sport" | "tech" | "general" | "multi"

@@ -156,7 +156,7 @@ flowchart TD
 flowchart TD
     Q["Câu hỏi"] --> EXP["Multi-query expansion<br/>(gốc + 2 biến thể, model nhỏ)"]
     EXP --> HY["Hybrid search mỗi biến thể<br/>vector k=10 + BM25 → weighted RRF"]
-    HY --> DD["Xen kẽ thứ hạng, khử trùng<br/>giữ tối đa 10 ứng viên"]
+    HY --> DD["Xen kẽ thứ hạng, khử trùng<br/>giữ tối đa 8 ứng viên"]
     DD --> RR["Rerank bge-reranker-v2-m3<br/>lấy top 4"]
     RR --> T1{"điểm ≥ 0.05?"}
     T1 -->|"có"| GEN["Sinh câu trả lời<br/>kèm [Source N]"]
@@ -183,7 +183,7 @@ Quy trình RAG bao gồm 4 giai đoạn nối tiếp nhau được tinh chỉnh 
    - **Rerank cùng ngôn ngữ ([src/retrieval/lang.py](src/retrieval/lang.py)):** mỗi chunk được chấm với phiên bản câu hỏi cùng ngôn ngữ với nó (câu gốc hoặc bản dịch), nên số lần gọi model không tăng.
      - Lý do: cặp "câu hỏi tiếng Việt – đoạn tiếng Anh" chỉ được khoảng 0.02–0.05 điểm, dưới ngưỡng liên quan, kể cả khi đoạn đó chứa đúng đáp án. Cùng đoạn ấy chấm với câu hỏi tiếng Anh được 0.6–0.99.
      - Kết quả trên 24 câu eval: hit rate 0.79 → 0.96, MRR 0.75 → 0.90.
-   - Lọc từ tối đa **10 ứng viên** (`RERANK_MAX_CANDIDATES`) xuống **Top 4** (`TOP_K_RERANK`), rồi bỏ các chunk dưới ngưỡng liên quan.
+   - Lọc từ tối đa **8 ứng viên** (`RERANK_MAX_CANDIDATES`) xuống **Top 4** (`TOP_K_RERANK`), rồi bỏ các chunk dưới ngưỡng liên quan. Trên bộ eval, 6, 8 hay 10 ứng viên cho cùng hit rate; mỗi ứng viên tốn khoảng 0.28s CPU.
 4. **LLM Generation:**
    - Đưa câu hỏi kèm tối đa 4 chunks ngữ cảnh tinh chọn vào LLM để sinh câu trả lời kèm thẻ trích dẫn `[Source N]`.
 
@@ -386,6 +386,7 @@ Mọi cấu hình được tập trung tại file [config/settings.py](file:///e
 | `USE_RERANKER` | `True` | Bật/tắt tầng Reranking trong pipeline |
 | `VECTOR_WEIGHT` / `BM25_WEIGHT` | `0.6` / `0.4` | Trọng số hợp nhất vector và BM25 |
 | `RELEVANCE_THRESHOLD` | `0.05` | Điểm rerank (0..1) tối thiểu để một chunk được coi là liên quan |
+| `PARALLEL_EXPANSION` | `True` | Chạy query expansion song song với router LLM (expansion không phụ thuộc route) |
 | `QUERY_EXPANSION_CROSSLINGUAL` | `True` | Một biến thể của query expansion là bản dịch Việt ↔ Anh, dùng cho cả truy xuất lẫn rerank |
 | `INDEX_VERSION` | `""` | Phiên bản index. Mỗi phiên bản có thư mục store riêng (`<model>-<version>`) và manifest riêng, nên có thể dựng index mới song song với index cũ để so sánh |
 | `CONTEXTUAL_CHUNKS` | `False` | Gọi LLM một lần mỗi trang để sinh "Tên tài liệu › Mục" và tóm tắt một câu, rồi gắn vào đầu mỗi chunk (có cache). Tắt mặc định vì không cải thiện trên bộ eval hiện tại |
@@ -593,7 +594,7 @@ for source in result["sources"]:
 
 ## 10. Tiến Độ Dự Án
 
-> Cập nhật: 20/11/2026 · Test: **107/107 passed** (`python -m pytest -q`, ~2 phút)
+> Cập nhật: 20/11/2026 · Test: **112/112 passed** (`python -m pytest -q`, ~2 phút 30 giây)
 
 ### Các mốc đã hoàn thành (theo lịch sử commit)
 
@@ -610,7 +611,8 @@ for source in result["sources"]:
 | 9 | `950f876` | MCP client và Tool Agent (filesystem chỉ đọc + fetch URL) |
 | 10 | `9f343e6` | Đổi domain finance sang sport, sơ đồ README bằng Mermaid |
 | 11 | `3b1df32` | Evaluation: LLM judge, vòng tự sửa, eval offline, RAGAS |
-| 12 | (commit này) | Truy xuất xuyên ngôn ngữ: dịch Việt ↔ Anh trong expansion, rerank cùng ngôn ngữ |
+| 12 | `5a3b328` | Truy xuất xuyên ngôn ngữ: dịch Việt ↔ Anh trong expansion, rerank cùng ngôn ngữ |
+| 13 | (commit này) | Giảm độ trễ (router gọn, expansion song song, 8 ứng viên rerank); Supervisor truyền lịch sử hội thoại |
 
 ### Trạng thái theo thành phần
 
@@ -624,11 +626,11 @@ for source in result["sources"]:
 | Router (regex fast path + LLM JSON) | ✅ Hoàn thành | Route `tools` chỉ xuất hiện khi MCP đã kết nối |
 | RAG agent theo domain (Sport / Tech / General) | 🟡 Một phần | Tech: 3 PDF (630 chunk); Sport: 4 PDF luật bóng đá, FIFA, VFF (880 chunk, không đưa lên git); General đang trống |
 | Web Agent (DuckDuckGo) | ✅ Hoàn thành | `WebScraperTool` có sẵn nhưng Web Agent chưa dùng |
-| Supervisor (song song) + Synthesizer (đánh số nguồn toàn cục) | ✅ Hoàn thành | |
+| Supervisor (song song) + Synthesizer (đánh số nguồn toàn cục) | ✅ Hoàn thành | Agent con nhận lịch sử hội thoại và context của luồng gọi (stream event, tracing) |
 | Tool Agent qua MCP | ✅ Hoàn thành | Chỉ đọc; chặn SSRF; tối đa 5 vòng |
 | Bộ nhớ hội thoại | ✅ Hoàn thành | Chưa có xác thực người dùng |
 | Streaming SSE + React UI | ✅ Hoàn thành | Theme sáng/tối, lịch sử hội thoại, trạng thái API |
-| Kiểm thử tự động | ✅ 107 test | API, workflow, MCP, memory, đa ngôn ngữ, evaluation, contextual/rerank, unit |
+| Kiểm thử tự động | ✅ 112 test | API, workflow, MCP, memory, đa ngôn ngữ, evaluation, contextual/rerank, unit |
 | Đánh giá chất lượng (LLM judge + tự sửa + eval offline + RAGAS) | ✅ Hoàn thành | 24 câu chuẩn (18 sport, 6 tech), xem bảng kết quả bên dưới |
 | Truy xuất xuyên ngôn ngữ (Việt ↔ Anh) | ✅ Hoàn thành | Expansion có bản dịch, rerank cùng ngôn ngữ. Contextual chunk đã thử, không cải thiện nên mặc định tắt |
 
@@ -649,7 +651,19 @@ Cấu hình mặc định, 24 câu, LLM `nemotron-3.5-lightning-30b-a3b`. Thang 
 - Judge: faithfulness 4.88, relevance 5.0, correctness 5.0; pass rate 0.96.
 - Vòng tự sửa: 2 câu được sửa, cả 2 đạt sau khi sửa.
 - RAGAS: faithfulness 0.93, answer relevancy 0.84, context precision 0.95, context recall 1.00, factual correctness 0.71.
-- Độ trễ trung bình khoảng 16 giây/câu: router khoảng 2.2s, agent khoảng 9s (gồm khoảng 5s sinh câu trả lời), judge khoảng 1.2s.
+- Độ trễ: xem bảng bên dưới.
+
+**Độ trễ (Phase 3, cùng bộ câu hỏi, judge bật):**
+
+| | Trước | Sau |
+| :-- | :-- | :-- |
+| Router | 2.0s (31/32 route đúng) | 0.7s (32/32): chỉ yêu cầu JSON gọn `route` / `all_domains` / `confidence` |
+| Query expansion | chạy sau router (khoảng 0.8s) | chạy song song với router |
+| Rerank | 2.75s (10 ứng viên) | khoảng 2.3s (8 ứng viên, hit rate không đổi) |
+| Thời gian tới token đầu tiên (median, 6 câu) | khoảng 7.0s | **4.0s** |
+| Trung bình mỗi câu trong eval 24 câu | 16.3s | **9.7s** |
+
+Sau tối ưu, chất lượng giữ nguyên: route 100%, hit rate 0.96, MRR 0.90, faithfulness 4.96/5, pass rate 1.00.
 
 ### Việc còn tồn đọng / đề xuất tiếp theo
 
@@ -657,7 +671,7 @@ Cấu hình mặc định, 24 câu, LLM `nemotron-3.5-lightning-30b-a3b`. Thang 
 - **Truy xuất:** `sport-kickoff-goal` vẫn trượt ("quả giao bóng" bị hiểu thành *goal kick*).
 - **Judge:** điểm của LLM judge dao động giữa các lần chạy; nên dùng model judge mạnh hơn hoặc chấm nhiều lần lấy trung bình cho eval offline.
 - **Code chưa nối vào hệ thống:** `src/tools/calculator_tool.py`, `src/tools/search_tools.py`, `DocumentLoader`, `VectorStoreBuilder`, `CacheManager`, `POWERFUL_LLM_MODEL` (có thể nối thành tool cho agent hoặc xóa bớt).
-- **Route đa miền:** Supervisor chưa truyền lịch sử hội thoại cho các agent con (chỉ dùng câu hỏi đã viết lại) và không stream token trước bước tổng hợp.
+- **Route đa miền:** câu trả lời của các agent chạy song song không được stream; chỉ bản tổng hợp cuối cùng được gửi về.
 - **API:** trường `domain` trong `QueryRequest` chưa được dùng; `/api/stats` trả `uptime = 0` và danh sách agent chưa có `tools`.
 - **Bảo mật / vận hành:** chưa có xác thực, ai có `conversation_id` đều đọc được hội thoại; cấu hình MCP chỉ nạp lúc khởi động.
 - **Chưa có:** upload tài liệu qua API/UI, Docker/CI, tracing (Langfuse/LangSmith).

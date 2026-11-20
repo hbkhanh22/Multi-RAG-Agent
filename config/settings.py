@@ -66,8 +66,10 @@ class Settings(BaseSettings):
     chunk_overlap: int = 64
     top_k_retrieval: int = 10
     top_k_rerank: int = 4
-    # Cross-encoder cost grows linearly with candidates (CPU: ~0.7s each) => cap them.
-    rerank_max_candidates: int = 10
+    # Cross-encoder cost grows linearly with candidates (CPU ~0.28s each) => cap them.
+    # Eval (24 q): 10, 8 and 6 all give hit 0.96 / MRR 0.90; rerank 2.75s (10) vs 1.89s (6).
+    # 8 keeps ~3 slots per expanded query for harder questions.
+    rerank_max_candidates: int = 8
 
     # Index layout. Changing chunking/contextualisation needs a re-index: each version
     # lives in its own store sub-directory (<model>-<version>) with its own manifest, so
@@ -81,6 +83,9 @@ class Settings(BaseSettings):
     # Multi-query expansion: make one rewrite a translation (vi <-> en), so a Vietnamese
     # question also searches the English documents (and vice versa).
     query_expansion_crosslingual: bool = True
+    # Run multi-query expansion concurrently with the router LLM (it does not depend
+    # on the route): saves one LLM round-trip before the first token.
+    parallel_expansion: bool = True
 
     # Hybrid retrieval fusion weights (vector vs BM25)
     vector_weight: float = 0.6

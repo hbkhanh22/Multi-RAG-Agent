@@ -6,6 +6,7 @@ supervisor itself makes no LLM calls.
 
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
+import contextvars
 import logging
 
 from .base_agent import BaseAgent
@@ -39,7 +40,8 @@ class SupervisorAgent(BaseAgent):
         Execute the active agents in parallel.
 
         Args:
-            input_data: Must contain 'query' and 'active_agents'
+            input_data: Must contain 'query' and 'active_agents'. Optional 'history'
+                (formatted earlier turns) and 'on_event' are passed to every agent.
         """
         try:
             query = input_data.get("query", "")
@@ -48,7 +50,9 @@ class SupervisorAgent(BaseAgent):
             if not query:
                 return {"success": False, "agent_responses": {}, "sources": []}
 
-            agent_responses = self._execute_agents_parallel(query, active_agents)
+            shared = {k: input_data[k] for k in ("history", "on_event", "expanded_queries")
+                      if input_data.get(k)}
+            agent_responses = self._execute_agents_parallel(query, active_agents, shared)
 
             return {
                 "success": any(r.get("success") for r in agent_responses.values()),
@@ -60,8 +64,12 @@ class SupervisorAgent(BaseAgent):
             logger.error(f"Error in supervisor: {e}", exc_info=True)
             return {"success": False, "agent_responses": {}, "sources": [], "error": str(e)}
 
-    def _execute_agents_parallel(self, query: str, active_agents: List[str]) -> Dict[str, Dict]:
-        """Run each known agent in its own thread and collect the results."""
+    def _execute_agents_parallel(self, query: str, active_agents: List[str],
+                                 shared: Optional[Dict[str, Any]] = None) -> Dict[str, Dict]:
+        """Run each known agent in its own thread and collect the results.
+
+        `shared` (history, on_event) is passed to every agent; no on_token: parallel
+        answers are merged by the synthesizer, so they are not streamed."""
         names = []
         for name in dict.fromkeys(active_agents):  # dedupe, keep order
             if name in self.agents:
@@ -71,7 +79,7 @@ class SupervisorAgent(BaseAgent):
 
         def _run(name: str) -> Dict:
             try:
-                return self.agents[name].run({"query": query})
+                return self.agents[name].run({"query": query, **(shared or {})})
             except Exception as e:
                 logger.error(f"Error executing {name} agent: {e}", exc_info=True)
                 return {"success": False, "error": str(e), "answer": f"Error in {name} agent", "sources": []}
@@ -79,8 +87,11 @@ class SupervisorAgent(BaseAgent):
         if not names:
             return {}
 
+        # Each thread runs in a copy of the caller's context: LangGraph's stream writer
+        # (and tracing callbacks) live in contextvars, which threads do not inherit.
         with ThreadPoolExecutor(max_workers=len(names)) as pool:
-            results = list(pool.map(_run, names))
+            futures = [pool.submit(contextvars.copy_context().run, _run, n) for n in names]
+            results = [f.result() for f in futures]
 
         return dict(zip(names, results))
 

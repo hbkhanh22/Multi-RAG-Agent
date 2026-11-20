@@ -152,15 +152,8 @@ Key rules:
 2. If the user asks about current events, breaking news, "hôm nay", "mới nhất", "bây giờ", or requests web search, choose 'web'.
 3. If the query requires both domain docs and web search, choose 'multi' with both in all_domains.
 
-{tools_key_rule}Respond with ONLY a valid JSON object, no markdown, no explanation outside the JSON:
-{
-  "primary_domain": "{domain_enum}",
-  "all_domains": [{domain_list}],
-  "domain_scores": {"sport": 0.0, "tech": 0.0, "general": 0.0, "web": 0.0, "direct_chat": 0.0},
-  "route": "{domain_enum}|multi",
-  "confidence": 0.95,
-  "reasoning": "one-sentence explanation"
-}"""
+{tools_key_rule}Respond with ONLY a compact JSON object, no markdown, no explanation:
+{"route": "{domain_enum}|multi", "all_domains": [{domain_list}], "confidence": 0.95}"""
             system_prompt = self._fill_tools(system_prompt)
             
             prompt = f"""Classify this query:

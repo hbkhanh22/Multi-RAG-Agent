@@ -82,6 +82,7 @@ def create_initial_state(query: str, history: Optional[List[Dict[str, str]]] = N
         "query": query,
         "history": history or [],
         "standalone_query": "",
+        "expanded_queries": [],
         "messages": [HumanMessage(content=query)],
         "route": "general",
         "active_agents": ["general"],
