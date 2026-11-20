@@ -103,10 +103,3 @@ class SupervisorAgent(BaseAgent):
                 for citation in response.get("sources", []):
                     citations.append({**citation, "agent": agent_name})
         return citations
-
-    def get_supervision_status(self) -> Dict[str, Any]:
-        """Get status of supervisor and all agents"""
-        return {
-            "supervisor": self.get_agent_info(),
-            "agents": {name: agent.get_agent_info() for name, agent in self.agents.items()},
-        }

@@ -43,14 +43,6 @@ def route_after_router(state: AgentState) -> NextNode:
     }.get(domain, "general_agent")
 
 
-def route_to_synthesizer(state: AgentState) -> Literal["synthesizer"]:
-    """Always route to synthesizer after agent processing"""
-    return "synthesizer"
-
-
-def route_to_end(state: AgentState) -> Literal["__end__"]:
-    """Route to end"""
-    return "__end__"
 
 
 def route_after_evaluation(state: AgentState) -> Literal["refine", "__end__"]:

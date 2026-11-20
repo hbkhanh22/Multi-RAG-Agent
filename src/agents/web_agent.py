@@ -2,11 +2,11 @@
 Web Agent - Specialist agent for retrieving and synthesizing information from the live web
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import logging
 
 from .base_agent import BaseAgent
-from src.tools.web_search import web_search_tool, web_scraper_tool
+from src.tools.web_search import web_search_tool
 from config.settings import settings
 from src.guardrails.injection import DATA_RULE, neutralise
 from src.observability import metrics
@@ -24,7 +24,6 @@ class WebAgent(BaseAgent):
             temperature=temperature
         )
         self.search_tool = web_search_tool
-        self.scraper_tool = web_scraper_tool
         self.domain = "web"
         logger.info(f"Initialized {name}")
     

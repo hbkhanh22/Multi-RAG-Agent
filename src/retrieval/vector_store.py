@@ -101,9 +101,6 @@ class VectorBackend(ABC):
     @abstractmethod
     def count(self, domain: str) -> int: ...
 
-    @abstractmethod
-    def clear(self, domain: str) -> None: ...
-
     def fingerprint(self, domain: str):
         return self.count(domain)
 
@@ -178,9 +175,6 @@ class ChromaBackend(VectorBackend):
     def count(self, domain):
         return self._store(domain)._collection.count()
 
-    def clear(self, domain):
-        self._store(domain).delete_collection()
-        self.stores[domain] = self._make(domain)
 
 
 class PgVectorBackend(VectorBackend):
@@ -296,12 +290,6 @@ class PgVectorBackend(VectorBackend):
             ).one()
         return tuple(row)
 
-    def clear(self, domain):
-        from sqlalchemy import delete
-        from src.storage.db import chunks
-
-        with self.engine.begin() as conn:
-            conn.execute(delete(chunks).where(*self._where(domain)))
 
     def healthy(self):
         from src.storage.db import ping
@@ -369,15 +357,6 @@ class VectorStoreManager:
         except Exception as e:
             logger.error(f"Error deleting '{filename}' from {domain}: {e}")
             return 0
-
-    def clear_store(self, domain: str) -> bool:
-        try:
-            self.backend.clear(domain)
-            self._invalidate_bm25(domain)
-            return True
-        except Exception as e:
-            logger.error(f"Error clearing {domain} store: {e}")
-            return False
 
     # ------------------------------------------------------------------ read
 

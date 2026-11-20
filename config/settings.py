@@ -7,7 +7,7 @@ regardless of the directory uvicorn is started from.
 """
 
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,12 +32,10 @@ class Settings(BaseSettings):
 
     # ============= API Keys =============
     nvidia_api_key: str = ""
-    google_api_key: Optional[str] = None  # unused (kept so old .env files still load)
 
     # ============= LLM =============
     default_llm_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
     fast_llm_model: str = "nvidia/nemotron-3.5-bolt-e4b"
-    powerful_llm_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
     # Router only emits a tiny JSON: use a small non-reasoning model + short output.
     # Empty string => fall back to default_llm_model.
     # Reasoning-capable models (nemotron 3.5) spend the token budget "thinking" and can return

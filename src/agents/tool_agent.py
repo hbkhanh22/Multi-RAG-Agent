@@ -73,7 +73,7 @@ class ToolAgent(BaseAgent):
         final_text = ""
 
         try:
-            for round_no in range(settings.mcp_max_iterations):
+            for _ in range(settings.mcp_max_iterations):
                 ai = self._chat(messages, specs, on_token)
                 messages.append(ai)
                 if not ai.tool_calls:

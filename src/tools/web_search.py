@@ -1,14 +1,13 @@
 """
-Web Search & Web Scraper Tools - Powered by DuckDuckGo (ddgs) and BeautifulSoup
+Web search (DuckDuckGo via ddgs) and the SSRF guard shared with the MCP fetch tool.
+Fetching page content is done by the MCP "fetch" server (see src/mcp_client).
 """
 
 import ipaddress
 import logging
 import socket
 from typing import List, Dict, Optional
-import httpx
 from urllib.parse import urlparse
-from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +72,8 @@ class WebSearchTool:
 
 
 def _is_public_url(url: str) -> bool:
-    """Reject URLs that resolve to private/loopback/link-local addresses (SSRF guard)."""
+    """Reject URLs that resolve to private/loopback/link-local addresses (SSRF guard).
+    Used by the MCP manager before letting a tool fetch a URL."""
     try:
         host = urlparse(url).hostname
         if not host:
@@ -88,65 +88,5 @@ def _is_public_url(url: str) -> bool:
         return False
 
 
-class WebScraperTool:
-    """Fetches and cleans main text content from a web page"""
-    
-    def __init__(self, timeout: int = 10, max_chars: int = 2500):
-        self.timeout = timeout
-        self.max_chars = max_chars
-        self.headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            )
-        }
-    
-    def fetch_page_content(self, url: str) -> Optional[str]:
-        """
-        Download and extract clean text from a URL
-        
-        Args:
-            url: The webpage URL
-            
-        Returns:
-            Cleaned text snippet or None if failed
-        """
-        if not url or not url.startswith(("http://", "https://")):
-            return None
-        if not _is_public_url(url):
-            logger.warning(f"Blocked non-public URL: {url}")
-            return None
-            
-        try:
-            with httpx.Client(timeout=self.timeout, follow_redirects=True, headers=self.headers) as client:
-                resp = client.get(url)
-                if resp.status_code != 200:
-                    logger.warning(f"Failed to fetch {url}: status {resp.status_code}")
-                    return None
-                    
-                html = resp.text
-                soup = BeautifulSoup(html, "html.parser")
-                
-                # Remove unwanted tags
-                for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "aside", "svg"]):
-                    tag.decompose()
-                    
-                # Extract text
-                text = soup.get_text(separator=" ", strip=True)
-                
-                # Normalize whitespace
-                cleaned = " ".join(text.split())
-                if len(cleaned) > self.max_chars:
-                    cleaned = cleaned[:self.max_chars] + "... [Trang bị cắt ngắn]"
-                    
-                return cleaned
-                
-        except Exception as e:
-            logger.warning(f"Error scraping {url}: {e}")
-            return None
-
-
-# Global singleton instances
+# Global singleton instance
 web_search_tool = WebSearchTool()
-web_scraper_tool = WebScraperTool()

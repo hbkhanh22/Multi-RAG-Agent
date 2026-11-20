@@ -2,7 +2,7 @@
 Router Agent - Routes queries to appropriate specialist agents
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 import logging
 import json
 import re
@@ -66,7 +66,6 @@ class RouterAgent(BaseAgent):
         )
         
         self.domains = ["sport", "tech", "general", "web", "tools"]
-        self.multi_domain_threshold = 0.5
     
     def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -266,43 +265,3 @@ Respond with JSON only:"""
                 "confidence": 0.5,
                 "reasoning": "Parsing error - defaulting to general"
             }
-    
-    def route_to_agents(self, query: str) -> tuple:
-        """
-        Route query and return list of agents to invoke
-        
-        Args:
-            query: User query
-        
-        Returns:
-            Tuple of (route_type, agent_list, confidence)
-        """
-        result = self.run({"query": query})
-        
-        route = result.get("route", "general")
-        agents = result.get("agents", ["general"])
-        confidence = result.get("confidence", 0.5)
-        
-        return route, agents, confidence
-    
-    def explain_routing(self, query: str) -> str:
-        """Get explanation of routing decision"""
-        result = self.run({"query": query})
-        
-        explanation = f"""
-Routing Decision for Query: "{query}"
-
-Primary Domain: {result.get('primary_domain', 'unknown').upper()}
-Route Type: {result.get('route', 'unknown').upper()}
-Agents to Invoke: {', '.join(result.get('agents', ['general']))}
-Confidence: {result.get('confidence', 0):.1%}
-
-Reasoning: {result.get('reasoning', 'No reasoning provided')}
-
-Domain Scores:
-"""
-        scores = result.get("domain_scores", {})
-        for domain, score in scores.items():
-            explanation += f"  - {domain}: {score:.1%}\n"
-        
-        return explanation

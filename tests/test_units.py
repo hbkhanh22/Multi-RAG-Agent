@@ -1,4 +1,4 @@
-"""Pure-logic tests: router parsing, edges, calculator, synthesizer, scraper guard."""
+"""Pure-logic tests: router parsing, edges, synthesizer, SSRF guard."""
 import json
 
 import pytest
@@ -63,16 +63,7 @@ def test_edges(modules, route, agents, expected):
     assert route_after_router({"route": route, "active_agents": agents}) == expected
 
 
-def test_calculator_basic_and_safety(modules):
-    from src.tools.calculator_tool import calculator
-    assert calculator.evaluate("2+2*3") == 8.0
-    assert calculator.evaluate("sqrt(16)+max(1,2)") == 6.0
-    assert calculator.evaluate("1/0") is None
-    assert calculator.evaluate("__import__('os').system('x')") is None
-    assert calculator.evaluate("9**9**9") is None  # must return fast, not hang
-
-
-def test_scraper_blocks_private_hosts(modules):
+def test_ssrf_guard_blocks_private_hosts(modules):
     from src.tools.web_search import _is_public_url
     assert not _is_public_url("http://127.0.0.1:8000/")
     assert not _is_public_url("http://localhost/")

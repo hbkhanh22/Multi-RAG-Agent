@@ -360,10 +360,8 @@ multi-rag-agent/
 │   │   └── workflow.py            # Biên dịch StateGraph và hàm run_workflow()
 │   ├── ingestion/                 # Pipeline xử lý dữ liệu
 │   │   ├── auto_ingest.py         # sync_documents(): đồng bộ kho tài liệu -> index (bảng documents)
-│   │   ├── loader.py              # Bộ đọc PDF/Text/DOCX
 │   │   ├── chunker.py             # Bộ cắt văn bản đệ quy (Recursive Splitter)
-│   │   ├── contextualizer.py      # (tùy chọn) Ngữ cảnh theo trang: tiêu đề › mục + tóm tắt, gắn vào đầu chunk
-│   │   └── embedder.py            # VectorStoreBuilder (script/notebook)
+│   │   └── contextualizer.py      # (tùy chọn) Ngữ cảnh theo trang: tiêu đề › mục + tóm tắt, gắn vào đầu chunk
 │   ├── retrieval/                 # Công cụ truy xuất RAG
 │   │   ├── vector_store.py        # VectorStoreManager + backend Chroma / pgvector, vector/BM25/hybrid search
 │   │   ├── onnx_models.py         # Embedding + cross-encoder chạy ONNX Runtime int8
@@ -383,7 +381,7 @@ multi-rag-agent/
 │   ├── guardrails/                # input_guard.py (NemoGuard), injection.py (prompt injection), pii.py (che PII)
 │   ├── runtime.py                 # RunContext mỗi request: cờ huỷ + đếm token + chủ sở hữu
 │   ├── worker.py                  # Worker nạp tài liệu + theo dõi thư mục (python -m src.worker)
-│   ├── tools/                     # WebSearchTool, WebScraperTool (calculator/search_tools chưa nối vào graph)
+│   ├── tools/                     # WebSearchTool (DuckDuckGo) + chặn SSRF dùng chung với MCP fetch
 │   └── utils/                     # Công cụ ghi log và bộ đo thời gian (Timer)
 ├── evals/datasets/                # Bộ câu hỏi chuẩn (JSONL): câu hỏi, đáp án mẫu, nguồn + trang cần truy xuất
 ├── tests/                         # pytest (LLM giả, kho vector + reranker thật; nhãn `models` cho test cần mô hình)
@@ -404,7 +402,6 @@ Mọi cấu hình được tập trung tại file [config/settings.py](file:///e
 | `DEFAULT_LLM_MODEL` | `nvidia/nemotron-3.5-lightning-30b-a3b` | LLM sinh câu trả lời RAG và tổng hợp |
 | `FAST_LLM_MODEL` | `nvidia/nemotron-3.5-bolt-e4b` | LLM nhỏ cho query expansion |
 | `ROUTER_LLM_MODEL` / `CHAT_LLM_MODEL` | `nvidia/nemotron-3.5-bolt-e4b` | Router (JSON ngắn) và hội thoại thường; model không suy luận nên phản hồi ~1-2s. `gpt-oss-20b` là model suy luận, mất 50-300s cho cùng việc |
-| `POWERFUL_LLM_MODEL` | `nvidia/nemotron-3.5-lightning-30b-a3b` | Mô hình mạnh (hiện chưa agent nào dùng) |
 | `EMBEDDING_MODEL` | `BAAI/bge-m3` | Mô hình nhúng đa ngôn ngữ cục bộ (1024 dimensions) |
 | `CHUNK_SIZE` | `512` | Số ký tự tối đa trên mỗi chunk tài liệu |
 | `CHUNK_OVERLAP` | `64` | Số ký tự gối đầu giữa 2 chunk liên tiếp |
@@ -670,7 +667,7 @@ for source in result["sources"]:
 
 ## 10. Tiến Độ Dự Án
 
-> Cập nhật: 20/11/2026 · Test: **148 passed** (`python -m pytest -q` với `TEST_PG_URL`; không có Postgres thì 146 passed, 2 skipped)
+> Cập nhật: 20/11/2026 · Test: **147 passed** (`python -m pytest -q` với `TEST_PG_URL`; không có Postgres thì 145 passed, 2 skipped)
 
 ### Các mốc đã hoàn thành (theo lịch sử commit)
 
@@ -690,7 +687,8 @@ for source in result["sources"]:
 | 12 | `5a3b328` | Truy xuất xuyên ngôn ngữ: dịch Việt ↔ Anh trong expansion, rerank cùng ngôn ngữ |
 | 13 | `2522f79` | Giảm độ trễ (router gọn, expansion song song, 8 ứng viên rerank); Supervisor truyền lịch sử hội thoại |
 | 14 | `32d4432` | Phase 4 hạ tầng: pgvector, ONNX int8, worker + hàng đợi, S3, API tài liệu, dừng sinh, rate limit, metric/log/tracing, Docker, CI |
-| 15 | (commit này) | Phase 5 bảo mật (backend): tài khoản email/mật khẩu + Google, JWT + refresh token xoay vòng, tách dữ liệu theo người dùng, vai trò admin, guardrail NemoGuard, chống prompt injection, che PII, Langfuse |
+| 15 | `a6c66a2` | Phase 5 bảo mật (backend): tài khoản email/mật khẩu + Google, JWT + refresh token xoay vòng, tách dữ liệu theo người dùng, vai trò admin, guardrail NemoGuard, chống prompt injection, che PII, Langfuse |
+| 16 | (commit này) | Dọn code: bỏ module, phương thức, cấu hình và file không dùng (calculator, search_tools, loader, embedder, web scraper, notebook cũ, log và ảnh đã commit); log chỉ in một lần |
 
 ### Trạng thái theo thành phần
 
@@ -703,13 +701,13 @@ for source in result["sources"]:
 | Query expansion | 🟡 Một phần | Multi-query bật; HyDE, synonyms, domain-specific có code nhưng tắt |
 | Router (regex fast path + LLM JSON) | ✅ Hoàn thành | Route `tools` chỉ xuất hiện khi MCP đã kết nối |
 | RAG agent theo domain (Sport / Tech / General) | 🟡 Một phần | Tech: 3 PDF (630 chunk); Sport: 4 PDF luật bóng đá, FIFA, VFF (880 chunk, không đưa lên git); General đang trống |
-| Web Agent (DuckDuckGo) | ✅ Hoàn thành | `WebScraperTool` có sẵn nhưng Web Agent chưa dùng |
+| Web Agent (DuckDuckGo) | ✅ Hoàn thành | Đọc nội dung một URL cụ thể do MCP `fetch` đảm nhận |
 | Supervisor (song song) + Synthesizer (đánh số nguồn toàn cục) | ✅ Hoàn thành | Agent con nhận lịch sử hội thoại và context của luồng gọi (stream event, tracing) |
 | Tool Agent qua MCP | ✅ Hoàn thành | Chỉ đọc; chặn SSRF; tối đa 5 vòng |
 | Bộ nhớ hội thoại | ✅ Hoàn thành | SQLite hoặc Postgres; lưu token đã dùng mỗi câu trả lời. Chưa có xác thực người dùng |
 | Hạ tầng (Phase 4) | ✅ Hoàn thành | pgvector, ONNX int8, Docker Compose, CI, metric / log / tracing; xem mục 11 |
 | Streaming SSE + React UI | ✅ Hoàn thành | Theme sáng/tối, lịch sử hội thoại, trạng thái API |
-| Kiểm thử tự động | ✅ 148 test | API, workflow, MCP, memory, đa ngôn ngữ, evaluation, contextual/rerank, unit, hạ tầng (hàng đợi, sync, S3, pgvector, huỷ, rate limit), bảo mật (đăng nhập, token, tách dữ liệu, Google, guardrail, PII) |
+| Kiểm thử tự động | ✅ 147 test | API, workflow, MCP, memory, đa ngôn ngữ, evaluation, contextual/rerank, unit, hạ tầng (hàng đợi, sync, S3, pgvector, huỷ, rate limit), bảo mật (đăng nhập, token, tách dữ liệu, Google, guardrail, PII) |
 | Bảo mật (Phase 5) | 🟡 Backend xong | Đăng nhập + phân quyền + guardrail + che PII + Langfuse. Giao diện đăng nhập chưa làm, nên `AUTH_ENABLED` mặc định tắt |
 | Đánh giá chất lượng (LLM judge + tự sửa + eval offline + RAGAS) | ✅ Hoàn thành | 24 câu chuẩn (18 sport, 6 tech), xem bảng kết quả bên dưới |
 | Truy xuất xuyên ngôn ngữ (Việt ↔ Anh) | ✅ Hoàn thành | Expansion có bản dịch, rerank cùng ngôn ngữ. Contextual chunk đã thử, không cải thiện nên mặc định tắt |
@@ -762,7 +760,6 @@ Sau tối ưu, chất lượng giữ nguyên: route 100%, hit rate 0.96, MRR 0.9
 - **Dữ liệu:** bổ sung tài liệu cho `data/raw/general`; mở rộng bộ eval (hiện 24 câu, nên lên 50–100 câu).
 - **Truy xuất:** `sport-kickoff-goal` vẫn trượt ("quả giao bóng" bị hiểu thành *goal kick*).
 - **Judge:** điểm của LLM judge dao động giữa các lần chạy; nên dùng model judge mạnh hơn hoặc chấm nhiều lần lấy trung bình cho eval offline.
-- **Code chưa nối vào hệ thống:** `src/tools/calculator_tool.py`, `src/tools/search_tools.py`, `DocumentLoader`, `VectorStoreBuilder`, `CacheManager`, `POWERFUL_LLM_MODEL` (có thể nối thành tool cho agent hoặc xóa bớt).
 - **Route đa miền:** câu trả lời của các agent chạy song song không được stream; chỉ bản tổng hợp cuối cùng được gửi về.
 - **API:** trường `domain` trong `QueryRequest` chưa được dùng; `/api/stats` trả `uptime = 0` và danh sách agent chưa có `tools`.
 - **Frontend Phase 5:** trang đăng nhập / đăng ký / Google, gửi access token, tự làm mới token; sau đó bật `AUTH_ENABLED=true` mặc định trong compose.

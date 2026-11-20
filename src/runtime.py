@@ -114,8 +114,3 @@ def cancel(request_id: str, owner: Optional[str] = None) -> bool:
         return False
     ctx.cancel()
     return True
-
-
-def active_count() -> int:
-    with _active_lock:
-        return len(_active)

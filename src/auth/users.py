@@ -136,10 +136,3 @@ def upsert_google_user(sub: str, email: str, name: str, email_verified: bool) ->
             conn.execute(update(users).where(users.c.id == uid).values(
                 google_sub=sub, last_login_at=utcnow(), role=_role_for(email, row.role)))
     return get_user(uid)        # read after commit (another connection)
-
-
-def set_role(user_id: str, role: str) -> None:
-    if role not in ("user", "admin"):
-        raise ValueError("role must be user or admin")
-    with get_engine().begin() as conn:
-        conn.execute(update(users).where(users.c.id == user_id).values(role=role))

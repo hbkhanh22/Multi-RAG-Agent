@@ -6,10 +6,9 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List
 import logging
 import time
-from datetime import datetime
 
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from config.settings import settings
 from src import runtime
@@ -47,8 +46,7 @@ class BaseAgent(ABC):
         except Exception as e:
             logger.error(f"Failed to initialize LLM for {self.name}: {e}")
             raise
-        
-        self.created_at = datetime.now()
+
     
     @abstractmethod
     def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -133,45 +131,3 @@ class BaseAgent(ABC):
             metrics.record_llm_call(self.model, self.name, prompt, completion, time.time() - started)
         except Exception as e:  # accounting must never break an answer
             logger.debug(f"usage accounting failed: {e}")
-
-    def process_input(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Process and validate input data
-        
-        Args:
-            input_data: Raw input dictionary
-        
-        Returns:
-            Processed input dictionary
-        """
-        return input_data
-    
-    def format_context(self, context_items: List[str], title: str = "Context") -> str:
-        """
-        Format context for LLM prompt
-        
-        Args:
-            context_items: List of context strings
-            title: Title for context section
-        
-        Returns:
-            Formatted context string
-        """
-        if not context_items:
-            return ""
-        
-        formatted = f"\n{title}:\n" + "-" * 50 + "\n"
-        for i, item in enumerate(context_items, 1):
-            formatted += f"\n[{i}] {item}\n"
-        formatted += "-" * 50 + "\n"
-        
-        return formatted
-    
-    def get_agent_info(self) -> Dict[str, Any]:
-        """Get agent information"""
-        return {
-            "name": self.name,
-            "model": self.model,
-            "temperature": self.temperature,
-            "created_at": self.created_at.isoformat(),
-        }

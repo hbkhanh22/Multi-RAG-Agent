@@ -17,7 +17,6 @@ logs/
 data/vectorstores/
 data/generated/
 data/processed/
-notebooks/data/vectorstores/
 data/models/
 data/memory.db*
 data/mcp_workspace/

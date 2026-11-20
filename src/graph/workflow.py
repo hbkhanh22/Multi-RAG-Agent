@@ -93,8 +93,6 @@ def create_initial_state(query: str, history: Optional[List[Dict[str, str]]] = N
         "route": "general",
         "active_agents": ["general"],
         "router_confidence": 0.0,
-        "retrieved_docs": {},
-        "reranked_docs": {},
         "agent_responses": {},
         "retrieval_stats": {},
         "final_answer": "",

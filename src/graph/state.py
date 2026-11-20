@@ -28,10 +28,6 @@ class AgentState(TypedDict):
     active_agents: List[str]  # List of agent names to activate
     router_confidence: float
     
-    # ========== Retrieval Results ==========
-    retrieved_docs: Dict[str, List[Dict]]  # {agent_name: [docs]}
-    reranked_docs: Dict[str, List[Dict]]  # {agent_name: [docs]}
-    
     # ========== Agent Responses ==========
     agent_responses: Annotated[Dict[str, Dict[str, Any]], merge_dicts]  # {agent_name: response_dict}
     retrieval_stats: Dict[str, Dict[str, int]]  # {agent_name: {retrieved, reranked}}
@@ -55,32 +51,3 @@ class AgentState(TypedDict):
     # ========== Performance Metrics ==========
     start_time: float
     processing_times: Dict[str, float]  # {component: time_in_seconds}
-
-
-class MessageState(TypedDict):
-    """Simple state for message-based workflows"""
-    messages: Annotated[List[BaseMessage], operator.add]
-    
-
-class RouterState(TypedDict):
-    """State for router node"""
-    query: str
-    route: str
-    agents: List[str]
-    confidence: float
-
-
-class RetrievalState(TypedDict):
-    """State for retrieval nodes"""
-    query: str
-    domain: str
-    retrieved_docs: List[Dict]
-    reranked_docs: List[Dict]
-
-
-class SynthesisState(TypedDict):
-    """State for synthesis node"""
-    query: str
-    agent_responses: Dict[str, Dict]
-    final_answer: str
-    sources: List[Dict]

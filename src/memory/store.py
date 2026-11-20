@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from sqlalchemy import delete, exists, func, insert, select, update
+from sqlalchemy import delete, exists, insert, select, update
 
 from src.storage.db import conversations, get_engine, messages, now_iso
 
@@ -119,15 +119,5 @@ class ConversationStore:
             # explicit child delete: SQLite only cascades with PRAGMA foreign_keys
             c.execute(delete(messages).where(messages.c.conversation_id == cid))
             return c.execute(delete(conversations).where(conversations.c.id == cid)).rowcount > 0
-
-    def usage_totals(self) -> Dict[str, int]:
-        with self.engine.connect() as c:
-            row = c.execute(select(
-                func.count(messages.c.id),
-                func.coalesce(func.sum(messages.c.prompt_tokens), 0),
-                func.coalesce(func.sum(messages.c.completion_tokens), 0),
-            ).where(messages.c.role == "assistant")).one()
-        return {"answers": row[0], "prompt_tokens": int(row[1]), "completion_tokens": int(row[2])}
-
 
 conversation_store = ConversationStore()

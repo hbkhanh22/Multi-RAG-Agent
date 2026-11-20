@@ -2,7 +2,6 @@
 FastAPI Main Application - Multi-RAG Agent System API
 """
 
-import logging
 import time
 import uuid
 from contextlib import asynccontextmanager

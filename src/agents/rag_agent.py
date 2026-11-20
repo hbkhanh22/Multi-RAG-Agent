@@ -281,16 +281,3 @@ Please provide a comprehensive answer with citations:"""
         return citations
 
     # -------------------------------------------------------------- helpers
-
-    def batch_process(self, queries: List[str]) -> List[Dict[str, Any]]:
-        """Process multiple queries"""
-        return [self.run({"query": q}) for q in queries]
-
-    def get_domain_stats(self) -> Dict[str, Any]:
-        """Get statistics about this agent's domain"""
-        return {
-            "agent": self.name,
-            "domain": self.domain,
-            "store_stats": get_vector_store_manager().get_store_stats(self.domain),
-            "model": self.model,
-        }

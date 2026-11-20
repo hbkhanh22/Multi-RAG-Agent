@@ -216,7 +216,7 @@ class MCPManager:
 
         url = arguments.get("url")
         if isinstance(url, str):
-            from src.tools.web_search import _is_public_url  # SSRF guard shared with our scraper
+            from src.tools.web_search import _is_public_url  # SSRF guard
             if not _is_public_url(url):
                 raise MCPToolError("Blocked: URL is not a public address")
 

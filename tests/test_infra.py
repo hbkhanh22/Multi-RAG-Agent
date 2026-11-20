@@ -7,7 +7,6 @@ token accounting, ops endpoints, document API. Optional live tests:
 import io
 import os
 import time
-from pathlib import Path
 
 import pytest
 from langchain_core.documents import Document
@@ -63,10 +62,6 @@ class MemoryBackend:
 
     def fingerprint(self, domain):
         return self.count(domain)
-
-    def clear(self, domain):
-        for key in [k for k in self.chunks if k[0] == domain]:
-            del self.chunks[key]
 
     def healthy(self):
         return True
