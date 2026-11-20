@@ -13,6 +13,11 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# multi-process mode writes one file per metric/process here; it must exist before
+# the first metric is created (the container entrypoint also cleans it at start)
+if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+    os.makedirs(os.environ["PROMETHEUS_MULTIPROC_DIR"], exist_ok=True)
+
 try:
     from prometheus_client import (
         CONTENT_TYPE_LATEST,

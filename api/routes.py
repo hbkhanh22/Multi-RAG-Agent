@@ -24,7 +24,7 @@ from src.mcp_client import mcp_manager
 from src.memory import conversation_store
 from src.observability import metrics, tracing
 from src.observability.logging import request_id_var
-from src.retrieval import vector_store_manager
+from src.retrieval.vector_store import get_vector_store_manager
 from api.schemas import (
     QueryRequest,
     QueryResponse,
@@ -305,7 +305,7 @@ def health_check():
     """Health check: verifies vector stores and LLM credentials are usable"""
     components: Dict[str, str] = {}
     for domain in DOMAINS:
-        stats = vector_store_manager.get_store_stats(domain)
+        stats = get_vector_store_manager().get_store_stats(domain)
         components[f"vector_store_{domain}"] = "healthy" if "error" not in stats else "unavailable"
     components["llm_api_key"] = "configured" if settings.nvidia_api_key else "missing"
     mcp = mcp_manager.status()
@@ -328,7 +328,7 @@ def health_check():
 def stats_endpoint():
     """Get system statistics"""
     try:
-        domains = {d: vector_store_manager.get_store_stats(d).get("document_count", 0) for d in DOMAINS}
+        domains = {d: get_vector_store_manager().get_store_stats(d).get("document_count", 0) for d in DOMAINS}
         return StatsResponse(
             domains=domains,
             agents_available=DOMAINS + ["web", "supervisor"],
@@ -344,7 +344,7 @@ def domain_stats_endpoint(domain: str):
     if domain not in DOMAINS:
         raise HTTPException(status_code=400, detail="Invalid domain")
     try:
-        return vector_store_manager.get_store_stats(domain)
+        return get_vector_store_manager().get_store_stats(domain)
     except Exception as e:
         raise _internal_error("domain stats failed", e)
 

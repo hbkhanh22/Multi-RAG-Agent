@@ -12,7 +12,8 @@ import logging
 from langchain_core.documents import Document
 
 from .base_agent import BaseAgent
-from src.retrieval import vector_store_manager, reranker, query_expander
+from src.retrieval import reranker, query_expander
+from src.retrieval.vector_store import get_vector_store_manager  # resolved on use: importing agents loads no model
 from src.tools.web_search import web_search_tool
 from config.settings import settings
 
@@ -125,7 +126,7 @@ class RAGAgent(BaseAgent):
                 )
 
             per_query = [
-                vector_store_manager.hybrid_search(domain, q, k=settings.top_k_retrieval) for q in queries
+                get_vector_store_manager().hybrid_search(domain, q, k=settings.top_k_retrieval) for q in queries
             ]
 
             # Interleave the per-query rankings (best of each query first), dedupe, then cap:
@@ -282,6 +283,6 @@ Please provide a comprehensive answer with citations:"""
         return {
             "agent": self.name,
             "domain": self.domain,
-            "store_stats": vector_store_manager.get_store_stats(self.domain),
+            "store_stats": get_vector_store_manager().get_store_stats(self.domain),
             "model": self.model,
         }
