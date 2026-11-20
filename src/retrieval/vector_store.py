@@ -36,8 +36,10 @@ def _doc_key(doc: Document) -> Tuple:
 
 
 def embedding_slug() -> str:
-    """Filesystem-safe tag of the configured embedding model."""
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", settings.embedding_model.split("/")[-1]).lower()
+    """Filesystem-safe tag of the embedding model + index version (store dir / manifest name)."""
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", settings.embedding_model.split("/")[-1]).lower()
+    version = re.sub(r"[^A-Za-z0-9._-]+", "_", settings.index_version or "").lower()
+    return f"{slug}-{version}" if version else slug
 
 
 class VectorStoreManager:

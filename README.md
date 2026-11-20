@@ -170,6 +170,7 @@ flowchart TD
 Quy trình RAG bao gồm 4 giai đoạn nối tiếp nhau được tinh chỉnh để tối đa hoá độ chính xác:
 1. **Query Expansion (Mở rộng câu hỏi):**
    - **Multi-Query:** LLM sinh thêm 2 biến thể câu hỏi (mặc định chỉ bật Multi-Query) tiếp cận từ nhiều góc độ khác nhau.
+   - **Cross-lingual (`QUERY_EXPANSION_CROSSLINGUAL`, mặc định bật):** biến thể đầu tiên là bản dịch Việt ↔ Anh của câu hỏi, dùng thuật ngữ chuẩn của lĩnh vực. Kho tài liệu có cả tiếng Anh (IFAB, FIFA, tài liệu tech) lẫn tiếng Việt (VFF, ĐH Duy Tân).
    - **Synonym Expansion (có sẵn, mặc định tắt để giảm số lần gọi LLM):** Bổ sung thuật ngữ đồng nghĩa theo chuyên ngành thể thao và công nghệ.
    - **HyDE (Hypothetical Document Embeddings, có sẵn nhưng mặc định tắt):** LLM sinh một đoạn giả định chứa câu trả lời khả dĩ và dùng embedding của đoạn này để truy xuất tài liệu, giúp thu hẹp khoảng cách ngữ nghĩa giữa câu hỏi ngắn và đoạn văn bản dài.
 2. **Hybrid Retrieval & Deduplication (ChromaDB + BM25):**
@@ -179,6 +180,9 @@ Quy trình RAG bao gồm 4 giai đoạn nối tiếp nhau được tinh chỉnh 
 3. **Cross-Encoder Re-ranking:**
    - Sử dụng mô hình `BAAI/bge-reranker-v2-m3` (đa ngôn ngữ, điểm sigmoid 0..1).
    - Tính toán điểm tương đồng ngữ nghĩa sâu (deep cross-attention) giữa câu hỏi và từng chunk.
+   - **Rerank cùng ngôn ngữ ([src/retrieval/lang.py](src/retrieval/lang.py)):** mỗi chunk được chấm với phiên bản câu hỏi cùng ngôn ngữ với nó (câu gốc hoặc bản dịch), nên số lần gọi model không tăng.
+     - Lý do: cặp "câu hỏi tiếng Việt – đoạn tiếng Anh" chỉ được khoảng 0.02–0.05 điểm, dưới ngưỡng liên quan, kể cả khi đoạn đó chứa đúng đáp án. Cùng đoạn ấy chấm với câu hỏi tiếng Anh được 0.6–0.99.
+     - Kết quả trên 24 câu eval: hit rate 0.79 → 0.96, MRR 0.75 → 0.90.
    - Lọc từ tối đa **10 ứng viên** (`RERANK_MAX_CANDIDATES`) xuống **Top 4** (`TOP_K_RERANK`), rồi bỏ các chunk dưới ngưỡng liên quan.
 4. **LLM Generation:**
    - Đưa câu hỏi kèm tối đa 4 chunks ngữ cảnh tinh chọn vào LLM để sinh câu trả lời kèm thẻ trích dẫn `[Source N]`.
@@ -338,10 +342,12 @@ multi-rag-agent/
 │   │   ├── auto_ingest.py         # Quét và nhúng tài liệu gia tăng tự động
 │   │   ├── loader.py              # Bộ đọc PDF/Text/DOCX
 │   │   ├── chunker.py             # Bộ cắt văn bản đệ quy (Recursive Splitter)
+│   │   ├── contextualizer.py      # (tùy chọn) Ngữ cảnh theo trang: tiêu đề › mục + tóm tắt, gắn vào đầu chunk
 │   │   └── embedder.py            # VectorStoreBuilder
 │   ├── retrieval/                 # Công cụ truy xuất RAG
 │   │   ├── vector_store.py        # VectorStoreManager: 3 collection Chroma, vector/BM25/hybrid search
-│   │   ├── reranker.py            # Cross-Encoder Reranker
+│   │   ├── reranker.py            # Cross-Encoder Reranker (chấm theo biến thể câu hỏi cùng ngôn ngữ)
+│   │   ├── lang.py                # Nhận diện tiếng Việt và chọn biến thể câu hỏi cho rerank
 │   │   └── query_expansion.py     # Kỹ thuật HyDE & Multi-Query Expansion
 │   ├── evaluation/                # Đánh giá chất lượng
 │   │   ├── judge.py               # AnswerJudge (LLM-as-judge) + AnswerRefiner (tự sửa theo nhận xét)
@@ -380,6 +386,9 @@ Mọi cấu hình được tập trung tại file [config/settings.py](file:///e
 | `USE_RERANKER` | `True` | Bật/tắt tầng Reranking trong pipeline |
 | `VECTOR_WEIGHT` / `BM25_WEIGHT` | `0.6` / `0.4` | Trọng số hợp nhất vector và BM25 |
 | `RELEVANCE_THRESHOLD` | `0.05` | Điểm rerank (0..1) tối thiểu để một chunk được coi là liên quan |
+| `QUERY_EXPANSION_CROSSLINGUAL` | `True` | Một biến thể của query expansion là bản dịch Việt ↔ Anh, dùng cho cả truy xuất lẫn rerank |
+| `INDEX_VERSION` | `""` | Phiên bản index. Mỗi phiên bản có thư mục store riêng (`<model>-<version>`) và manifest riêng, nên có thể dựng index mới song song với index cũ để so sánh |
+| `CONTEXTUAL_CHUNKS` | `False` | Gọi LLM một lần mỗi trang để sinh "Tên tài liệu › Mục" và tóm tắt một câu, rồi gắn vào đầu mỗi chunk (có cache). Tắt mặc định vì không cải thiện trên bộ eval hiện tại |
 | `SELF_EVAL_ENABLED` | `True` | Bật LLM judge chấm câu trả lời sau bước tổng hợp |
 | `JUDGE_LLM_MODEL` | `""` (= `DEFAULT_LLM_MODEL`) | Model dùng làm giám khảo |
 | `SELF_EVAL_MIN_SCORE` | `4` | Tiêu chí nào có điểm (1-5) thấp hơn ngưỡng này thì câu trả lời bị coi là chưa đạt |
@@ -584,7 +593,7 @@ for source in result["sources"]:
 
 ## 10. Tiến Độ Dự Án
 
-> Cập nhật: 19/11/2026 · Test: **95/95 passed** (`python -m pytest -q`, ~2 phút 30 giây)
+> Cập nhật: 20/11/2026 · Test: **107/107 passed** (`python -m pytest -q`, ~2 phút)
 
 ### Các mốc đã hoàn thành (theo lịch sử commit)
 
@@ -599,6 +608,9 @@ for source in result["sources"]:
 | 7 | `3944c52` | Đường tắt câu chào (không gọi LLM), model nhỏ cho router/chat, streaming SSE |
 | 8 | `fe4f366` | Bộ nhớ hội thoại SQLite, viết lại câu hỏi nối tiếp, lịch sử ở sidebar |
 | 9 | `950f876` | MCP client và Tool Agent (filesystem chỉ đọc + fetch URL) |
+| 10 | `9f343e6` | Đổi domain finance sang sport, sơ đồ README bằng Mermaid |
+| 11 | `3b1df32` | Evaluation: LLM judge, vòng tự sửa, eval offline, RAGAS |
+| 12 | (commit này) | Truy xuất xuyên ngôn ngữ: dịch Việt ↔ Anh trong expansion, rerank cùng ngôn ngữ |
 
 ### Trạng thái theo thành phần
 
@@ -616,13 +628,33 @@ for source in result["sources"]:
 | Tool Agent qua MCP | ✅ Hoàn thành | Chỉ đọc; chặn SSRF; tối đa 5 vòng |
 | Bộ nhớ hội thoại | ✅ Hoàn thành | Chưa có xác thực người dùng |
 | Streaming SSE + React UI | ✅ Hoàn thành | Theme sáng/tối, lịch sử hội thoại, trạng thái API |
-| Kiểm thử tự động | ✅ 95 test | API, workflow, MCP, memory, đa ngôn ngữ, evaluation, unit |
-| Đánh giá chất lượng (LLM judge + tự sửa + eval offline) | ✅ Hoàn thành | 17 câu chuẩn (13 sport, 4 tech). Lần chạy 19/11/2026: route 100%, retrieval hit 94% / MRR 0.88, faithfulness 4.71/5, correctness 4.87/5, độ trễ trung bình ~14s |
+| Kiểm thử tự động | ✅ 107 test | API, workflow, MCP, memory, đa ngôn ngữ, evaluation, contextual/rerank, unit |
+| Đánh giá chất lượng (LLM judge + tự sửa + eval offline + RAGAS) | ✅ Hoàn thành | 24 câu chuẩn (18 sport, 6 tech), xem bảng kết quả bên dưới |
+| Truy xuất xuyên ngôn ngữ (Việt ↔ Anh) | ✅ Hoàn thành | Expansion có bản dịch, rerank cùng ngôn ngữ. Contextual chunk đã thử, không cải thiện nên mặc định tắt |
+
+### Kết quả đánh giá (20/11/2026)
+
+Cấu hình mặc định, 24 câu, LLM `nemotron-3.5-lightning-30b-a3b`. Thang điểm judge là 1-5, RAGAS là 0-1.
+
+**Truy xuất (eval chỉ đo truy xuất, A/B):**
+
+| Cấu hình | Hit rate | MRR | Precision |
+| :-- | :-- | :-- | :-- |
+| Ban đầu (chunk 512, không dịch) | 0.79 | 0.75 | 0.47 |
+| + dịch Việt ↔ Anh, rerank cùng ngôn ngữ (**mặc định**) | **0.96** | **0.90** | **0.56** |
+| + contextual chunk (index v2, chunk 1000) | 0.92 | 0.87 | 0.51 |
+
+**Toàn pipeline:**
+- Route accuracy 100%.
+- Judge: faithfulness 4.88, relevance 5.0, correctness 5.0; pass rate 0.96.
+- Vòng tự sửa: 2 câu được sửa, cả 2 đạt sau khi sửa.
+- RAGAS: faithfulness 0.93, answer relevancy 0.84, context precision 0.95, context recall 1.00, factual correctness 0.71.
+- Độ trễ trung bình khoảng 16 giây/câu: router khoảng 2.2s, agent khoảng 9s (gồm khoảng 5s sinh câu trả lời), judge khoảng 1.2s.
 
 ### Việc còn tồn đọng / đề xuất tiếp theo
 
-- **Dữ liệu:** bổ sung tài liệu cho `data/raw/general`; mở rộng bộ eval (hiện 17 câu).
-- **Truy xuất đa ngôn ngữ:** câu hỏi tiếng Việt về việt vị lấy tài liệu tiếng Việt (VFF, ĐH Duy Tân) thay vì Luật 11 gốc của IFAB (eval `sport-offside-position`: miss).
+- **Dữ liệu:** bổ sung tài liệu cho `data/raw/general`; mở rộng bộ eval (hiện 24 câu, nên lên 50–100 câu).
+- **Truy xuất:** `sport-kickoff-goal` vẫn trượt ("quả giao bóng" bị hiểu thành *goal kick*).
 - **Judge:** điểm của LLM judge dao động giữa các lần chạy; nên dùng model judge mạnh hơn hoặc chấm nhiều lần lấy trung bình cho eval offline.
 - **Code chưa nối vào hệ thống:** `src/tools/calculator_tool.py`, `src/tools/search_tools.py`, `DocumentLoader`, `VectorStoreBuilder`, `CacheManager`, `POWERFUL_LLM_MODEL` (có thể nối thành tool cho agent hoặc xóa bớt).
 - **Route đa miền:** Supervisor chưa truyền lịch sử hội thoại cho các agent con (chỉ dùng câu hỏi đã viết lại) và không stream token trước bước tổng hợp.

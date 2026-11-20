@@ -90,6 +90,59 @@ def evaluate_item(item: Dict[str, Any], judge, run_workflow) -> Dict[str, Any]:
     }
 
 
+def evaluate_retrieval(item: Dict[str, Any], rag_agents: Dict[str, Any]) -> Dict[str, Any]:
+    """Retrieval only (expansion -> hybrid -> rerank -> fallbacks), no answer generation."""
+    domain = item.get("domain") or "general"
+    agent = rag_agents.get(domain) or rag_agents["general"]
+    t0 = time.time()
+    documents, _, fallback = agent._gather_context(item["question"])
+    contexts = agent._contexts(documents)
+    return {
+        "id": item["id"],
+        "question": item["question"],
+        "domain": domain,
+        "fallback": fallback,
+        "retrieval": retrieval_metrics(contexts, item.get("evidence") or []),
+        "retrieved_sources": [
+            {"rank": i, "source": Path(str(c.get("source") or "")).name, "page": c.get("page")}
+            for i, c in enumerate(contexts, 1)
+        ],
+        "latency_s": round(time.time() - t0, 2),
+    }
+
+
+def render_retrieval_markdown(results: List[Dict[str, Any]], meta: Dict[str, Any]) -> str:
+    s = summarize(results)["retrieval"]
+    fb = [r.get("fallback") for r in results if not r.get("error")]
+    lines = [
+        f"# Retrieval report — {meta['timestamp']}",
+        "",
+        f"Index: `{meta['index']}` · chunk {meta['chunk_size']}/{meta['chunk_overlap']} · "
+        f"contextual: {meta['contextual']} · cross-lingual expansion: {meta['crosslingual']} · "
+        f"items: {len(results)}",
+        "",
+        "| Metric | Value |",
+        "|---|---|",
+        f"| Hit rate | {_fmt(s['hit_rate'])} |",
+        f"| MRR | {_fmt(s['mrr'])} |",
+        f"| Precision | {_fmt(s['precision'])} |",
+        f"| Fallback used (not 'none') | {sum(1 for f in fb if f != 'none')} / {len(fb)} |",
+        f"| Latency mean (s) | {_fmt(summarize(results)['latency_s']['mean'])} |",
+        "",
+        "| id | hit | RR | prec | fallback | retrieved (file p.page) |",
+        "|---|---|---|---|---|---|",
+    ]
+    for x in results:
+        if x.get("error"):
+            lines.append(f"| {x['id']} | ERROR {x['error'][:60]} | | | | |")
+            continue
+        r = x.get("retrieval") or {}
+        got = ", ".join(f"{d['source'][:18]} p{d['page']}" for d in x["retrieved_sources"])
+        lines.append(f"| {x['id']} | {_fmt(r.get('hit'))} | {_fmt(r.get('reciprocal_rank'))} "
+                     f"| {_fmt(r.get('precision'))} | {x['fallback']} | {got} |")
+    return "\n".join(lines) + "\n"
+
+
 def _fmt(v, nd=2):
     if v is None:
         return "–"
@@ -232,6 +285,8 @@ def main(argv=None) -> int:
                              "context_recall factual_correctness")
     parser.add_argument("--rescore", type=Path, default=None,
                         help="add RAGAS metrics to an existing results .json (no pipeline run)")
+    parser.add_argument("--retrieval-only", action="store_true",
+                        help="only measure retrieval (fast: no answer generation, no judge)")
     parser.add_argument("--out", type=Path, default=BASE_DIR / "evals" / "results")
     args = parser.parse_args(argv)
 
@@ -246,6 +301,44 @@ def main(argv=None) -> int:
         meta["ragas_model"] = add_ragas_scores(results, args.ragas_metrics)
         meta["rescored_from"] = args.rescore.name
         write_report(args.out, summarize(results), results, meta)
+        return 0
+
+    if args.retrieval_only:
+        items = load_dataset(args.dataset)
+        if args.only:
+            items = [i for i in items if i["id"] in set(args.only)]
+        if args.limit:
+            items = items[: args.limit]
+        from src.agents.rag_agent import RAGAgent
+        from src.retrieval.vector_store import embedding_slug
+        agents = {d: RAGAgent(d) for d in ("sport", "tech", "general")}
+        results = []
+        for n, item in enumerate(items, 1):
+            try:
+                res = evaluate_retrieval(item, agents)
+            except Exception as e:
+                logger.exception(f"{item['id']} crashed")
+                res = {"id": item["id"], "question": item["question"], "error": str(e)}
+            results.append(res)
+            print(f"[{n}/{len(items)}] {item['id']}: hit={(res.get('retrieval') or {}).get('hit')} "
+                  f"rr={(res.get('retrieval') or {}).get('reciprocal_rank')} {res.get('latency_s')}s", flush=True)
+        meta = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "mode": "retrieval-only",
+            "datasets": [p.name for p in args.dataset],
+            "index": embedding_slug(),
+            "chunk_size": settings.chunk_size, "chunk_overlap": settings.chunk_overlap,
+            "contextual": settings.contextual_chunks,
+            "crosslingual": settings.query_expansion_crosslingual,
+        }
+        args.out.mkdir(parents=True, exist_ok=True)
+        stem = datetime.now().strftime("%Y%m%d-%H%M%S") + "-retrieval"
+        (args.out / f"{stem}.json").write_text(json.dumps(
+            {"meta": meta, "summary": summarize(results), "results": results}, ensure_ascii=False, indent=2),
+            encoding="utf-8")
+        report = render_retrieval_markdown(results, meta)
+        (args.out / f"{stem}.md").write_text(report, encoding="utf-8")
+        print("\n" + report)
         return 0
 
     if args.no_self_eval:

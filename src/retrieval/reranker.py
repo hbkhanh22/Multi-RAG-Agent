@@ -13,6 +13,7 @@ from sentence_transformers import CrossEncoder
 from langchain_core.documents import Document
 
 from config.settings import settings
+from src.retrieval.lang import pick_query
 
 logger = logging.getLogger(__name__)
 
@@ -54,15 +55,19 @@ class Reranker:
             logger.error(f"Failed to load reranker model: {e}")
             return False
     
-    def rerank(self, query: str, documents: List[Document], k: int = None) -> List[Tuple[Document, float]]:
+    def rerank(self, query: str, documents: List[Document], k: int = None,
+               query_variants: Optional[List[str]] = None) -> List[Tuple[Document, float]]:
         """
         Rerank documents by relevance to query
-        
+
         Args:
             query: Query string
             documents: List of documents to rerank
             k: Return top k documents (uses top_k_rerank from settings if not specified)
-        
+            query_variants: Other renderings of the query (e.g. a translation). Each document
+                is then scored against the variant in its own language (cross-lingual fix);
+                the number of model calls stays one per document.
+
         Returns:
             List of (document, score) tuples sorted by relevance score descending
         """
@@ -79,8 +84,12 @@ class Reranker:
         try:
             # Prepare pairs for CrossEncoder
             doc_texts = [doc.page_content for doc in documents]
-            pairs = [[query, text] for text in doc_texts]
-            
+            variants = [query] + [q for q in (query_variants or []) if q and q != query]
+            if len(variants) > 1:
+                pairs = [[pick_query(variants, text), text] for text in doc_texts]
+            else:
+                pairs = [[query, text] for text in doc_texts]
+
             # Get relevance scores
             logger.info(f"Reranking {len(documents)} documents for query")
             scores = self.model.predict(

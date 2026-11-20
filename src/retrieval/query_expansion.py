@@ -112,9 +112,15 @@ Hypothetical document:"""
             List of alternative queries
         """
         try:
+            crosslingual = (
+                "\nThe knowledge base mixes English and Vietnamese documents: the FIRST alternative must be "
+                "a faithful translation of the query into English (or into Vietnamese if the query is "
+                "already in English), using the official terminology of the field."
+                if settings.query_expansion_crosslingual else ""
+            )
             system_prompt = f"""You are an expert at reformulating queries for search.
 Generate {num_queries} different phrasings of the given query that capture different aspects or terminology.
-Each phrasing should be a valid search query.
+Each phrasing should be a valid search query.{crosslingual}
 Return ONLY a JSON array of strings, nothing else.
 
 Example format:

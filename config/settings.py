@@ -69,6 +69,18 @@ class Settings(BaseSettings):
     # Cross-encoder cost grows linearly with candidates (CPU: ~0.7s each) => cap them.
     rerank_max_candidates: int = 10
 
+    # Index layout. Changing chunking/contextualisation needs a re-index: each version
+    # lives in its own store sub-directory (<model>-<version>) with its own manifest, so
+    # an old index stays usable while a new one is built. "" = legacy (512/64, no context).
+    index_version: str = ""
+    # Contextual retrieval: one LLM call per PAGE yields its section + a one-line summary,
+    # prepended to every chunk of that page before embedding / BM25 (cached on disk).
+    contextual_chunks: bool = False
+    contextual_llm_model: str = ""     # empty => fast_llm_model
+    contextual_max_page_chars: int = 6000
+    # Multi-query expansion: make one rewrite a translation (vi <-> en), so a Vietnamese
+    # question also searches the English documents (and vice versa).
+    query_expansion_crosslingual: bool = True
 
     # Hybrid retrieval fusion weights (vector vs BM25)
     vector_weight: float = 0.6

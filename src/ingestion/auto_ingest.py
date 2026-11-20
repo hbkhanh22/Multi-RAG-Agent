@@ -18,6 +18,7 @@ from langchain_community.document_loaders import PyPDFLoader, TextLoader
 
 from config.settings import settings, BASE_DIR
 from src.ingestion.chunker import DocumentChunker
+from src.ingestion.contextualizer import PageContextualizer, add_chunk_headers
 from src.retrieval import vector_store_manager
 from src.retrieval.vector_store import embedding_slug
 
@@ -112,6 +113,7 @@ def auto_ingest_raw_documents() -> Dict[str, int]:
     chunker = DocumentChunker(chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)
     stats = {"sport": 0, "tech": 0, "general": 0, "removed": 0, "total_chunks": 0}
     max_bytes = settings.max_file_size_mb * 1024 * 1024
+    contextualizer = None  # created on first use (LLM client)
 
     present = set()
     for domain, file_path in _iter_files():
@@ -139,9 +141,15 @@ def auto_ingest_raw_documents() -> Dict[str, int]:
                 d.metadata["filename"] = file_path.name
                 d.metadata["source"] = key
 
+            if settings.contextual_chunks:
+                contextualizer = contextualizer or PageContextualizer()
+                contextualizer.contextualize(docs, key, stat.st_size, stat.st_mtime)
+
             chunks = chunker.chunk(docs)
             if not chunks:
                 continue
+            if settings.contextual_chunks:
+                add_chunk_headers(chunks)
 
             # Remove stale chunks of a previous version before adding the new ones
             if entry:

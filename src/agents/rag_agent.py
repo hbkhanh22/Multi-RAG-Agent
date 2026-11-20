@@ -79,10 +79,10 @@ class RAGAgent(BaseAgent):
         settings.relevance_threshold; plain similarity search always returns k
         neighbours, relevant or not, so without this the fallbacks never fire.
         """
-        # 1) Own domain (with query expansion)
-        candidates = self._retrieve(query, self.domain, expand=True)
+        # 1) Own domain (with query expansion; the rewrites include a vi<->en translation)
+        candidates, variants = self._retrieve(query, self.domain, expand=True)
         retrieved_count = len(candidates)
-        relevant = self._select_relevant(query, candidates)
+        relevant = self._select_relevant(query, candidates, variants)
         if relevant:
             return relevant, retrieved_count, "none"
 
@@ -91,9 +91,9 @@ class RAGAgent(BaseAgent):
         other: List[Document] = []
         for domain in ALL_DOMAINS:
             if domain != self.domain:
-                other.extend(self._retrieve(query, domain, expand=False))
+                other.extend(self._retrieve(query, domain, expand=False)[0])
         retrieved_count += len(other)
-        relevant = self._select_relevant(query, other)
+        relevant = self._select_relevant(query, other, variants)
         if relevant:
             return relevant, retrieved_count, "cross_domain"
 
@@ -108,8 +108,10 @@ class RAGAgent(BaseAgent):
 
     # ------------------------------------------------------------ retrieval
 
-    def _retrieve(self, query: str, domain: str, expand: bool) -> List[Document]:
-        """Hybrid-search a domain (optionally for several expanded queries) and dedupe."""
+    def _retrieve(self, query: str, domain: str, expand: bool) -> Tuple[List[Document], List[str]]:
+        """Hybrid-search a domain (optionally for several expanded queries) and dedupe.
+
+        Returns (candidates, query variants used)."""
         try:
             queries = [query]
             if expand:
@@ -135,13 +137,14 @@ class RAGAgent(BaseAgent):
                             docs.append(doc)
 
             logger.info(f"Retrieved {len(docs)} candidate documents from {domain}")
-            return docs[: settings.rerank_max_candidates]
+            return docs[: settings.rerank_max_candidates], queries
 
         except Exception as e:
             logger.error(f"Error during retrieval in {domain}: {e}", exc_info=True)
-            return []
+            return [], [query]
 
-    def _select_relevant(self, query: str, documents: List[Document]) -> List[Document]:
+    def _select_relevant(self, query: str, documents: List[Document],
+                         variants: List[str] = None) -> List[Document]:
         """Rerank and keep only chunks above the relevance threshold."""
         if not documents:
             return []
@@ -150,7 +153,9 @@ class RAGAgent(BaseAgent):
             return documents[: settings.top_k_rerank]
 
         try:
-            scored: List[ScoredDoc] = reranker.rerank(query, documents, k=settings.top_k_rerank)
+            scored: List[ScoredDoc] = reranker.rerank(
+                query, documents, k=settings.top_k_rerank, query_variants=variants
+            )
         except Exception as e:
             logger.error(f"Error during reranking: {e}")
             return documents[: settings.top_k_rerank]
