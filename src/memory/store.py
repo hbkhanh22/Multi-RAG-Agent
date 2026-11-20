@@ -39,11 +39,20 @@ class ConversationStore:
                 id=cid, title=title[:80], user_id=user_id, created_at=now, updated_at=now))
         return cid
 
-    def exists(self, cid: Optional[str]) -> bool:
+    @staticmethod
+    def _owned(cid: str, user_id: Optional[str]):
+        """WHERE clause: the conversation, and (when user_id is given) owned by that user.
+        user_id=None means no ownership check (authentication disabled)."""
+        cond = [conversations.c.id == cid]
+        if user_id is not None:
+            cond.append(conversations.c.user_id == user_id)
+        return cond
+
+    def exists(self, cid: Optional[str], user_id: Optional[str] = None) -> bool:
         if not cid:
             return False
         with self.engine.connect() as c:
-            return c.execute(select(conversations.c.id).where(conversations.c.id == cid)).first() is not None
+            return c.execute(select(conversations.c.id).where(*self._owned(cid, user_id))).first() is not None
 
     def add_exchange(self, cid: str, user_text: str, assistant_text: str,
                      meta: Optional[Dict[str, Any]] = None,
@@ -91,19 +100,22 @@ class ConversationStore:
             out.append(item)
         return out
 
-    def list_conversations(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def list_conversations(self, limit: int = 50, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         has_messages = exists().where(messages.c.conversation_id == conversations.c.id)
+        cond = [has_messages] + ([conversations.c.user_id == user_id] if user_id is not None else [])
         with self.engine.connect() as c:
             rows = c.execute(
                 select(conversations.c.id, conversations.c.title,
                        conversations.c.created_at, conversations.c.updated_at)
-                .where(has_messages)
+                .where(*cond)
                 .order_by(conversations.c.updated_at.desc()).limit(limit)
             ).all()
         return [dict(r._mapping) for r in rows]
 
-    def delete_conversation(self, cid: str) -> bool:
+    def delete_conversation(self, cid: str, user_id: Optional[str] = None) -> bool:
         with self.engine.begin() as c:
+            if c.execute(select(conversations.c.id).where(*self._owned(cid, user_id))).first() is None:
+                return False
             # explicit child delete: SQLite only cascades with PRAGMA foreign_keys
             c.execute(delete(messages).where(messages.c.conversation_id == cid))
             return c.execute(delete(conversations).where(conversations.c.id == cid)).rowcount > 0

@@ -21,6 +21,7 @@ class AgentState(TypedDict):
     history: List[Dict[str, str]]  # earlier turns [{role, content}], oldest first
     standalone_query: str  # query rewritten to need no history (routing/retrieval use it)
     expanded_queries: List[str]  # multi-query rewrites computed while routing ([] = not computed)
+    guardrail: Dict[str, Any]    # input guardrail verdict ({"blocked": True, ...} => refused)
     
     # ========== Routing ==========
     route: str  # "sport" | "tech" | "general" | "multi"

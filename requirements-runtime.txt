@@ -46,7 +46,11 @@ beautifulsoup4>=4.12
 # MCP client (tools from external MCP servers)
 mcp>=1.2
 
-# Ops
+# Security: JWT sessions (Phase 5)
+PyJWT[crypto]>=2.8
+
+# Ops: metrics, tracing (Langfuse, enabled by LANGFUSE_* keys)
 prometheus-client>=0.20
+langfuse>=3,<4
 watchfiles>=0.21
 python-dotenv>=1.0

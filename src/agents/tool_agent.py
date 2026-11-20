@@ -12,6 +12,8 @@ from typing import Any, Callable, Dict, List, Optional
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from config.settings import settings
+from src.guardrails.injection import neutralise
+from src.observability import metrics
 from src.mcp_client import MCPToolError, mcp_manager
 
 from .base_agent import BaseAgent
@@ -135,6 +137,10 @@ class ToolAgent(BaseAgent):
             logger.error(f"Unexpected tool error in {name}: {e}", exc_info=True)
             output, ok = f"ERROR: {e}", False
 
+        output, removed = neutralise(output)            # tool output is untrusted data
+        if removed:
+            logger.warning(f"Neutralised {removed} injection-like phrase(s) in output of {name}")
+            metrics.record_injection("tool", removed)
         logger.info(f"MCP tool {name}({args}) ok={ok}")
         trace.append({**label, "arguments": args, "ok": ok, "output_preview": output[:PREVIEW_CHARS]})
         if on_event:

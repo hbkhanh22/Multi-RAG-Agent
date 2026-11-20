@@ -16,6 +16,8 @@ from src.retrieval import reranker, query_expander
 from src.retrieval.vector_store import get_vector_store_manager  # resolved on use: importing agents loads no model
 from src.tools.web_search import web_search_tool
 from config.settings import settings
+from src.guardrails.injection import DATA_RULE, neutralise
+from src.observability import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +207,8 @@ class RAGAgent(BaseAgent):
 Answer the question based on the provided context, in the same language as the question.
 If the context is empty or insufficient, answer from your own knowledge but clearly say so.
 Always cite sources using [Source N] notation when context is available.
-Be precise and accurate."""
+Be precise and accurate.
+{DATA_RULE}"""
 
             if documents:
                 prompt = f"""Context:
@@ -233,10 +236,15 @@ Please provide a comprehensive answer with citations:"""
             raise
 
     def _format_context_for_llm(self, documents: List[Document]) -> str:
-        context = ""
+        context, removed = "", 0
         for i, doc in enumerate(documents, 1):
             source = doc.metadata.get("title") or doc.metadata.get("filename") or doc.metadata.get("source", "Unknown")
-            context += f"\n[Source {i}] {source}\n{doc.page_content[:MAX_CONTEXT_CHARS]}\n"
+            text, n = neutralise(doc.page_content[:MAX_CONTEXT_CHARS])   # indirect prompt injection
+            removed += n
+            context += f"\n[Source {i}] {source}\n{text}\n"
+        if removed:
+            logger.warning(f"Neutralised {removed} injection-like phrase(s) in {self.domain} context")
+            metrics.record_injection(self.domain, removed)
         return context
 
     @staticmethod

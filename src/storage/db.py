@@ -22,6 +22,7 @@ from typing import Optional
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Column,
     DateTime,
     Float,
@@ -53,6 +54,31 @@ def now_iso() -> str:
     """Chat timestamps are ISO strings (sortable, identical on SQLite and Postgres)."""
     return utcnow().isoformat(timespec="seconds")
 
+
+users = Table(
+    "users", metadata,
+    Column("id", String(32), primary_key=True),
+    Column("email", String(320), nullable=False, unique=True),     # stored lower-case
+    Column("name", String(200), nullable=False, default=""),
+    Column("password_hash", String(300), nullable=True),           # None => Google-only account
+    Column("google_sub", String(64), nullable=True, unique=True),  # Google account id ("sub")
+    Column("role", String(16), nullable=False, default="user"),    # user | admin
+    Column("is_active", Boolean, nullable=False, default=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, default=utcnow),
+    Column("last_login_at", DateTime(timezone=True), nullable=True),
+)
+
+refresh_tokens = Table(
+    "refresh_tokens", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", String(32), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True),
+    Column("token_hash", String(64), nullable=False, unique=True),  # sha256 of the opaque token
+    Column("family", String(32), nullable=False),                  # rotation chain (reuse detection)
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("revoked_at", DateTime(timezone=True), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, default=utcnow),
+    Column("user_agent", String(300), nullable=True),
+)
 
 conversations = Table(
     "conversations", metadata,

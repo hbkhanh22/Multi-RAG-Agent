@@ -65,6 +65,8 @@ class QueryResponse(BaseModel):
     # LLM token usage of this answer (prompt/completion, per model; estimated if the
     # provider did not report it)
     usage: Optional[Dict[str, Any]] = None
+    # Input guardrail verdict when it refused the request ({"blocked": true, "reason"...})
+    guardrail: Optional[Dict[str, Any]] = None
     metadata: Optional[Dict] = None
 
 

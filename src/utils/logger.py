@@ -59,6 +59,9 @@ def setup_logger(name: str) -> logging.Logger:
     file_handler.setFormatter(file_formatter)
     
     # Add handlers to logger
+    from src.observability.logging import PiiFilter
+    for h in (console_handler, file_handler):  # log files must not keep e-mails / phone numbers
+        h.addFilter(PiiFilter())
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)
     

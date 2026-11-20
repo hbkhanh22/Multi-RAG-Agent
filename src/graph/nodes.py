@@ -22,6 +22,7 @@ from src.memory import condense_prompt, format_history, history_to_messages, nee
 from src.agents.router_agent import fast_route
 from src.retrieval import query_expander
 from src.evaluation.judge import AnswerJudge, AnswerRefiner
+from src.guardrails import input_guard
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -94,25 +95,37 @@ def condense_node(state: AgentState) -> Dict[str, Any]:
 
 
 def router_node(state: AgentState) -> Dict[str, Any]:
-    """Route query to appropriate agents"""
+    """Route the query. In parallel: query expansion (independent of the route) and the
+    input guardrail (safety classifier). An unsafe request is routed to `blocked`."""
     logger.info("=== ROUTER NODE ===")
     emit({"type": "stage", "stage": "routing"})
 
     query = _q(state)
+    raw_query = state.get("query") or query          # guard what the user actually typed
     expanded: List[str] = []
-    if settings.parallel_expansion and not fast_route(query):
-        # Expansion does not depend on the route: run it during the router LLM call
-        with Timer("Router + expansion"), ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(contextvars.copy_context().run, query_expander.get_expanded_queries,
-                              query, None, ["multi_query"])
-            result = router_agent.run({"query": query})
+    verdict = None
+    smalltalk = fast_route(query) is not None
+    run_guard = settings.guardrails_enabled and not smalltalk
+    run_expansion = settings.parallel_expansion and not smalltalk
+
+    with Timer("Router + guard + expansion"), ThreadPoolExecutor(max_workers=2) as pool:
+        guard_fut = (pool.submit(contextvars.copy_context().run, input_guard.check, raw_query)
+                     if run_guard else None)
+        exp_fut = (pool.submit(contextvars.copy_context().run, query_expander.get_expanded_queries,
+                               query, None, ["multi_query"]) if run_expansion else None)
+        result = router_agent.run({"query": query})
+        if exp_fut is not None:
             try:
-                expanded = fut.result()
+                expanded = exp_fut.result()
             except Exception as e:  # the agents fall back to expanding themselves
                 logger.warning(f"Parallel expansion failed: {e}")
-    else:
-        with Timer("Router"):
-            result = router_agent.run({"query": query})
+        if guard_fut is not None:
+            verdict = guard_fut.result()
+
+    if verdict is not None and verdict.blocked:
+        emit({"type": "route", "route": "blocked", "agents": []})
+        return {"route": "blocked", "active_agents": [], "router_confidence": 1.0,
+                "expanded_queries": [], "guardrail": {**verdict.public(), "blocked": True}}
 
     route = result.get("route", "general")
     agents = result.get("agents", ["general"])
@@ -124,6 +137,22 @@ def router_node(state: AgentState) -> Dict[str, Any]:
         "active_agents": agents,
         "router_confidence": result.get("confidence", 0.5),
         "expanded_queries": expanded,
+        "guardrail": verdict.public() if verdict is not None else {},
+    }
+
+
+def blocked_node(state: AgentState) -> Dict[str, Any]:
+    """Refuse an unsafe request (no retrieval, no generation)."""
+    logger.info("=== BLOCKED (guardrail) ===")
+    verdict = state.get("guardrail") or {}
+    text = input_guard.REFUSAL.format(reason=verdict.get("reason") or "unsafe content")
+    emit({"type": "token", "text": text})
+    return {
+        "final_answer": text,
+        "status": "blocked",
+        "sources": [],
+        "key_themes": [],
+        "messages": [AIMessage(content=text)],
     }
 
 

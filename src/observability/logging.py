@@ -21,6 +21,27 @@ class RequestIdFilter(logging.Filter):
         return True
 
 
+class PiiFilter(logging.Filter):
+    """Masks e-mails, phone / ID / card numbers in the final log message."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if settings.pii_redaction and not getattr(record, "_pii_done", False):
+            from src.guardrails.pii import redact
+            try:
+                record.msg = redact(record.getMessage())
+                record.args = ()
+            except Exception:
+                pass
+            record._pii_done = True
+        return True
+
+
+def add_filters(handler: logging.Handler) -> None:
+    for cls in (RequestIdFilter, PiiFilter):
+        if not any(isinstance(f, cls) for f in handler.filters):
+            handler.addFilter(cls())
+
+
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload = {
@@ -46,6 +67,5 @@ def configure_logging() -> None:
         root.addHandler(logging.StreamHandler())
     formatter = JsonFormatter() if settings.log_json else logging.Formatter(TEXT_FORMAT)
     for handler in root.handlers:
-        if not any(isinstance(f, RequestIdFilter) for f in handler.filters):
-            handler.addFilter(RequestIdFilter())
+        add_filters(handler)
         handler.setFormatter(formatter)

@@ -16,7 +16,8 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from api.deps import rate_limit
+from api.deps import current_user, rate_limit
+from src.auth.users import User
 from src import runtime
 from src.graph import run_workflow, stream_workflow
 from src.graph.nodes import router_agent
@@ -49,27 +50,35 @@ def _internal_error(context: str, exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=f"Internal server error (trace id: {trace_id})")
 
 
-def _open_conversation(conversation_id: Optional[str]) -> Tuple[Optional[str], List[Dict[str, str]]]:
-    """Resolve the conversation (creating one if needed) and load its recent history."""
+def _owner(user: User) -> Optional[str]:
+    """Ownership filter for conversations: the user id, or None (= no filter) when
+    authentication is disabled."""
+    return user.id if settings.auth_enabled else None
+
+
+def _open_conversation(conversation_id: Optional[str], user: User) -> Tuple[Optional[str], List[Dict[str, str]]]:
+    """Resolve the caller's conversation (creating one if needed) and load its recent
+    history. Someone else's conversation id is treated like an unknown one."""
     try:
-        if conversation_id and conversation_store.exists(conversation_id):
+        if conversation_id and conversation_store.exists(conversation_id, _owner(user)):
             return conversation_id, conversation_store.get_recent(conversation_id, settings.memory_max_turns * 2)
-        return conversation_store.create_conversation(), []
+        return conversation_store.create_conversation(user_id=_owner(user)), []
     except Exception as e:  # memory must never take chat down
         logger.error(f"Conversation store unavailable: {e}", exc_info=True)
         return None, []
 
 
-def _new_run(conversation_id: Optional[str]) -> Tuple[runtime.RunContext, Dict[str, Any]]:
-    """Run context (cancel flag + token usage) and extra graph config (tracing)."""
+def _new_run(conversation_id: Optional[str], user: User) -> Tuple[runtime.RunContext, Dict[str, Any]]:
+    """Run context (cancel flag + token usage + owner) and extra graph config (tracing)."""
     rid = request_id_var.get()
-    ctx = runtime.RunContext(None if rid == "-" else rid)
-    return ctx, tracing.run_config(ctx.request_id, conversation_id)
+    ctx = runtime.RunContext(None if rid == "-" else rid, owner=user.id)
+    return ctx, tracing.run_config(ctx.request_id, conversation_id, user_id=_owner(user))
 
 
 def _remember(cid: Optional[str], query: str, resp: QueryResponse) -> None:
-    """Persist a finished turn; failed answers are not stored (they would pollute context)."""
-    if not cid or not resp.success or not resp.final_answer:
+    """Persist a finished turn; failed and blocked answers are not stored (they would
+    pollute the context of later turns)."""
+    if not cid or not resp.success or not resp.final_answer or (resp.guardrail or {}).get("blocked"):
         return
     try:
         conversation_store.add_exchange(cid, query, resp.final_answer, meta={
@@ -88,7 +97,8 @@ def _remember(cid: Optional[str], query: str, resp: QueryResponse) -> None:
 
 
 def _build_response(query: str, result: Dict[str, Any], include_metadata: bool = False) -> QueryResponse:
-    success = result.get("status") == "complete"
+    # a guardrail refusal is a successful, deliberate answer (not a system error)
+    success = result.get("status") in ("complete", "blocked")
     return QueryResponse(
         query=query,
         success=success,
@@ -111,6 +121,7 @@ def _build_response(query: str, result: Dict[str, Any], include_metadata: bool =
             ],
         } if result.get("evaluation") else None,
         usage=result.get("usage"),
+        guardrail=result.get("guardrail") or None,
         metadata={
             "processing_time": result.get("processing_times", {}).get("total", 0),
             "status": result.get("status"),
@@ -120,12 +131,12 @@ def _build_response(query: str, result: Dict[str, Any], include_metadata: bool =
 
 
 @router.post("/query", response_model=QueryResponse, dependencies=[Depends(rate_limit)])
-def query_endpoint(request: QueryRequest):
+def query_endpoint(request: QueryRequest, user: User = Depends(current_user)):
     """Process a query through the multi-RAG agent system"""
     try:
         logger.info(f"Processing query ({len(request.query)} chars)")
-        cid, history = _open_conversation(request.conversation_id)
-        ctx, config = _new_run(cid)
+        cid, history = _open_conversation(request.conversation_id, user)
+        ctx, config = _new_run(cid, user)
         result = run_workflow(request.query, debug=request.debug, history=history, run_ctx=ctx, config=config)
         metrics.record_query(result)
         resp = _build_response(request.query, result, request.include_metadata)
@@ -142,7 +153,7 @@ def _sse(event: Dict[str, Any]) -> str:
 
 
 @router.post("/query/stream", dependencies=[Depends(rate_limit)])
-def query_stream_endpoint(request: QueryRequest):
+def query_stream_endpoint(request: QueryRequest, user: User = Depends(current_user)):
     """
     Same as /query but streamed as Server-Sent Events:
     one `start` event (request_id, needed to cancel), `stage` / `route` / `token`
@@ -153,7 +164,7 @@ def query_stream_endpoint(request: QueryRequest):
     the connection: the graph stops before its next step and a streaming LLM call is
     interrupted, so no more tokens are paid for.
     """
-    ctx, config = _new_run(request.conversation_id)
+    ctx, config = _new_run(request.conversation_id, user)
     runtime.register(ctx)
     log_rid = request_id_var.get()
 
@@ -164,7 +175,7 @@ def query_stream_endpoint(request: QueryRequest):
         finished = False
         metrics.stream_started()
         try:
-            cid, history = _open_conversation(request.conversation_id)
+            cid, history = _open_conversation(request.conversation_id, user)
             yield _sse({"type": "start", "request_id": ctx.request_id, "conversation_id": cid})
             for event in stream_workflow(request.query, history, run_ctx=ctx, config=config):
                 kind = event.get("type")
@@ -212,15 +223,16 @@ def query_stream_endpoint(request: QueryRequest):
 
 
 @router.post("/query/{request_id}/cancel")
-def cancel_query_endpoint(request_id: str):
-    """Stop an answer that is being generated (the UI "Stop" button)."""
-    if not runtime.cancel(request_id):
+def cancel_query_endpoint(request_id: str, user: User = Depends(current_user)):
+    """Stop an answer that is being generated (the UI "Stop" button). Only the user
+    who asked can stop it."""
+    if not runtime.cancel(request_id, owner=user.id if settings.auth_enabled else None):
         raise HTTPException(status_code=404, detail="No running answer with this request id")
     return {"cancelled": request_id}
 
 
 @router.post("/query/batch", response_model=BatchQueryResponse, dependencies=[Depends(rate_limit)])
-def batch_query_endpoint(request: BatchQueryRequest):
+def batch_query_endpoint(request: BatchQueryRequest, user: User = Depends(current_user)):
     """Process multiple queries (sequentially)"""
     if len(request.queries) > settings.max_batch_queries:
         raise HTTPException(
@@ -251,19 +263,19 @@ def mcp_status_endpoint():
 
 
 @router.get("/conversations")
-def list_conversations_endpoint(limit: int = 50):
-    """Recent conversations (newest first) for the sidebar"""
+def list_conversations_endpoint(limit: int = 50, user: User = Depends(current_user)):
+    """The caller's recent conversations (newest first) for the sidebar"""
     try:
-        return {"conversations": conversation_store.list_conversations(min(max(limit, 1), 200))}
+        return {"conversations": conversation_store.list_conversations(min(max(limit, 1), 200), _owner(user))}
     except Exception as e:
         raise _internal_error("list conversations failed", e)
 
 
 @router.get("/conversations/{conversation_id}")
-def get_conversation_endpoint(conversation_id: str):
-    """Full message history of one conversation (to restore a chat)"""
+def get_conversation_endpoint(conversation_id: str, user: User = Depends(current_user)):
+    """Full message history of one of the caller's conversations (404 for others')"""
     try:
-        if not conversation_store.exists(conversation_id):
+        if not conversation_store.exists(conversation_id, _owner(user)):
             raise HTTPException(status_code=404, detail="Conversation not found")
         return {"id": conversation_id, "messages": conversation_store.get_messages(conversation_id)}
     except HTTPException:
@@ -273,9 +285,9 @@ def get_conversation_endpoint(conversation_id: str):
 
 
 @router.delete("/conversations/{conversation_id}")
-def delete_conversation_endpoint(conversation_id: str):
+def delete_conversation_endpoint(conversation_id: str, user: User = Depends(current_user)):
     try:
-        if not conversation_store.delete_conversation(conversation_id):
+        if not conversation_store.delete_conversation(conversation_id, _owner(user)):
             raise HTTPException(status_code=404, detail="Conversation not found")
         return {"deleted": conversation_id}
     except HTTPException:
@@ -285,7 +297,7 @@ def delete_conversation_endpoint(conversation_id: str):
 
 
 @router.post("/route")
-def route_endpoint(request: QueryRequest):
+def route_endpoint(request: QueryRequest, user: User = Depends(current_user)):
     """Get routing decision for a query without processing it"""
     try:
         result = router_agent.run({"query": request.query})
@@ -350,6 +362,6 @@ def domain_stats_endpoint(domain: str):
 
 
 @router.post("/chat", response_model=QueryResponse, dependencies=[Depends(rate_limit)])
-def chat_endpoint(request: QueryRequest):
+def chat_endpoint(request: QueryRequest, user: User = Depends(current_user)):
     """Chat endpoint (alias of /query, used by the frontend)"""
-    return query_endpoint(request)
+    return query_endpoint(request, user)

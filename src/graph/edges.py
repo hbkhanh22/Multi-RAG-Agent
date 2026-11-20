@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 NextNode = Literal[
     "supervisor", "sport_agent", "tech_agent", "general_agent",
-    "web_agent", "tool_agent", "direct_chat_agent",
+    "web_agent", "tool_agent", "direct_chat_agent", "blocked",
 ]
 
 
@@ -21,6 +21,10 @@ def route_after_router(state: AgentState) -> NextNode:
     active_agents = state.get("active_agents", ["general"])
 
     logger.info(f"Routing decision: {route}, agents: {active_agents}")
+
+    # The input guardrail refused the request
+    if route == "blocked":
+        return "blocked"
 
     # Conversational / greeting queries skip retrieval entirely
     if route == "direct_chat" or "direct_chat" in active_agents:

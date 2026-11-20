@@ -20,6 +20,10 @@ _TEST_DB_DIR = tempfile.mkdtemp(prefix="rag-tests-")
 os.environ["DATABASE_URL"] = f"sqlite:///{Path(_TEST_DB_DIR, 'app.db').as_posix()}"
 os.environ["RATE_LIMIT_PER_MINUTE"] = "0"
 os.environ["ADMIN_TOKEN"] = ""
+os.environ["AUTH_ENABLED"] = "false"          # security tests switch it on per test
+os.environ["GUARDRAILS_ENABLED"] = "false"    # no real NIM safety calls; tests mock the classifier
+os.environ["LANGFUSE_PUBLIC_KEY"] = ""
+os.environ["LANGFUSE_SECRET_KEY"] = ""
 
 MCP_QUERY = "What is Model Context Protocol (MCP)?"
 OFF_TOPIC_QUERY = "What is the interest rate on 10-year US treasury bonds?"

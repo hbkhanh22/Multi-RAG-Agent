@@ -50,6 +50,10 @@ if _AVAILABLE:
     INGEST_JOBS = Counter("rag_ingest_jobs_total", "Ingestion jobs", ["kind", "status"])
     INGESTED_DOCS = Counter("rag_ingested_documents_total", "Documents (re-)indexed", ["status"])
     ACTIVE_STREAMS = Gauge("rag_active_streams", "Answers being generated", multiprocess_mode="livesum")
+    AUTH_EVENTS = Counter("rag_auth_total", "Sign-in / sign-up attempts", ["method", "result"])
+    GUARD_VERDICTS = Counter("rag_guardrail_total", "Input guardrail verdicts", ["result", "category"])
+    INJECTIONS = Counter("rag_prompt_injection_total", "Prompt-injection text neutralised in retrieved content",
+                         ["source"])
 
 
 def _safe(fn):
@@ -124,6 +128,21 @@ def stream_started() -> None:
 @_safe
 def stream_finished() -> None:
     ACTIVE_STREAMS.dec()
+
+
+@_safe
+def record_auth(method: str, result: str) -> None:
+    AUTH_EVENTS.labels(method, result).inc()
+
+
+@_safe
+def record_guard(result: str, category: str = "none") -> None:
+    GUARD_VERDICTS.labels(result, category[:40]).inc()
+
+
+@_safe
+def record_injection(source: str, n: int = 1) -> None:
+    INJECTIONS.labels(source).inc(n)
 
 
 def render():

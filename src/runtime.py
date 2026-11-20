@@ -26,8 +26,9 @@ class Cancelled(Exception):
 
 
 class RunContext:
-    def __init__(self, request_id: Optional[str] = None):
+    def __init__(self, request_id: Optional[str] = None, owner: Optional[str] = None):
         self.request_id = request_id or uuid.uuid4().hex[:16]
+        self.owner = owner           # user id that started the request (cancel permission)
         self._cancelled = threading.Event()
         self._lock = threading.Lock()
         self.prompt_tokens = 0
@@ -104,10 +105,12 @@ def unregister(ctx: RunContext) -> None:
         _active.pop(ctx.request_id, None)
 
 
-def cancel(request_id: str) -> bool:
+def cancel(request_id: str, owner: Optional[str] = None) -> bool:
+    """Cancel a running request. With `owner`, only that user's request (others get
+    False, indistinguishable from an unknown id)."""
     with _active_lock:
         ctx = _active.get(request_id)
-    if ctx is None:
+    if ctx is None or (owner is not None and ctx.owner != owner):
         return False
     ctx.cancel()
     return True

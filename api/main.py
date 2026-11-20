@@ -19,6 +19,7 @@ from src.observability.logging import configure_logging, request_id_var
 
 configure_logging()
 
+from api.auth import router as auth_router  # noqa: E402
 from api.documents import router as documents_router  # noqa: E402
 from api.routes import router  # noqa: E402
 from src.mcp_client import mcp_manager  # noqa: E402
@@ -39,6 +40,15 @@ async def lifespan(app: FastAPI):
         f"models {settings.effective_model_backend} | storage {settings.document_storage} | "
         f"worker {settings.ingest_worker} | db {'postgres' if settings.is_postgres else 'sqlite'}"
     )
+    if settings.auth_enabled:
+        if not settings.jwt_secret:
+            api_logger.warning("AUTH_ENABLED but JWT_SECRET is empty: sessions will not survive a restart")
+        if not settings.admin_emails and not settings.admin_token:
+            api_logger.warning("AUTH_ENABLED but no ADMIN_EMAILS / ADMIN_TOKEN: nobody can manage documents")
+    else:
+        api_logger.warning("AUTH_ENABLED=false: single anonymous user, all conversations are shared (dev mode)")
+    api_logger.info(f"Guardrails {'on (' + settings.guard_model + ')' if settings.guardrails_enabled else 'off'}"
+                    f" | PII redaction {'on' if settings.pii_redaction else 'off'}")
     try:
         # Indexing happens in the worker, so the API answers immediately
         jobs.enqueue("sync", {"reason": "startup"})
@@ -109,6 +119,7 @@ async def request_context(request: Request, call_next):
         request_id_var.reset(token)
 
 
+app.include_router(auth_router)
 app.include_router(router)
 app.include_router(documents_router)
 

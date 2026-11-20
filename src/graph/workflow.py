@@ -23,6 +23,7 @@ from .nodes import (
     evaluator_node,
     refine_node,
     direct_chat_node,
+    blocked_node,
 )
 from .edges import route_after_router, route_after_evaluation
 from config.settings import settings
@@ -47,6 +48,7 @@ def build_agent_graph():
     graph.add_node("evaluator", evaluator_node)
     graph.add_node("refine", refine_node)
     graph.add_node("direct_chat_agent", direct_chat_node)
+    graph.add_node("blocked", blocked_node)
 
     graph.set_entry_point("condense")
     graph.add_edge("condense", "router")
@@ -62,6 +64,7 @@ def build_agent_graph():
             "web_agent": "web_agent",
             "tool_agent": "tool_agent",
             "direct_chat_agent": "direct_chat_agent",
+            "blocked": "blocked",
         },
     )
 
@@ -69,6 +72,7 @@ def build_agent_graph():
         graph.add_edge(node, "synthesizer")
 
     graph.add_edge("direct_chat_agent", END)
+    graph.add_edge("blocked", END)
     # Self-correction loop: judge the answer, revise it with the judge's feedback
     graph.add_edge("synthesizer", "evaluator")
     graph.add_conditional_edges("evaluator", route_after_evaluation, {"refine": "refine", "__end__": END})
@@ -84,6 +88,7 @@ def create_initial_state(query: str, history: Optional[List[Dict[str, str]]] = N
         "history": history or [],
         "standalone_query": "",
         "expanded_queries": [],
+        "guardrail": {},
         "messages": [HumanMessage(content=query)],
         "route": "general",
         "active_agents": ["general"],

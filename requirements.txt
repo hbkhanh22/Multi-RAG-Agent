@@ -9,9 +9,6 @@ onnxscript>=0.3
 # Offline evaluation (python -m src.evaluation.run --ragas)
 ragas>=0.4
 
-# Optional tracing (enabled when LANGFUSE_* keys are set)
-# langfuse>=3
-
 # Development
 pytest>=8.0
 moto[s3]>=5

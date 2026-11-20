@@ -19,6 +19,11 @@ _handler_factory = None
 _checked = False
 
 
+def _mask(data, **_):
+    from src.guardrails.pii import redact_any
+    return redact_any(data)
+
+
 def enabled() -> bool:
     return bool(settings.langfuse_public_key and settings.langfuse_secret_key)
 
@@ -36,8 +41,13 @@ def _factory():
         os.environ.setdefault("LANGFUSE_PUBLIC_KEY", settings.langfuse_public_key)
         os.environ.setdefault("LANGFUSE_SECRET_KEY", settings.langfuse_secret_key)
         os.environ.setdefault("LANGFUSE_HOST", settings.langfuse_host)
+        from langfuse import Langfuse
         from langfuse.langchain import CallbackHandler  # langfuse >= 3
 
+        # One client per process; `mask` scrubs e-mails / phones / ID numbers from every
+        # prompt and output before the trace leaves the machine.
+        Langfuse(public_key=settings.langfuse_public_key, secret_key=settings.langfuse_secret_key,
+                 host=settings.langfuse_host, mask=_mask if settings.pii_redaction else None)
         _handler_factory = CallbackHandler
         logger.info(f"Langfuse tracing enabled ({settings.langfuse_host})")
     except Exception as e:
@@ -45,7 +55,7 @@ def _factory():
     return _handler_factory
 
 
-def run_config(request_id: str, conversation_id: Optional[str] = None) -> Dict:
+def run_config(request_id: str, conversation_id: Optional[str] = None, user_id: Optional[str] = None) -> Dict:
     """Extra LangGraph config (callbacks + metadata) for one run; {} when disabled."""
     factory = _factory()
     if factory is None:
@@ -57,6 +67,7 @@ def run_config(request_id: str, conversation_id: Optional[str] = None) -> Dict:
             "metadata": {
                 "langfuse_session_id": conversation_id or request_id,
                 "langfuse_tags": ["multi-rag"],
+                **({"langfuse_user_id": user_id} if user_id else {}),
                 "request_id": request_id,
             },
         }

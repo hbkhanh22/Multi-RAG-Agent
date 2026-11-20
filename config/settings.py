@@ -194,6 +194,37 @@ class Settings(BaseSettings):
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"
 
+    # ============= Security (Phase 5) =============
+    # Authentication. Off => single anonymous user (dev, old frontend); every
+    # conversation is visible. On => each user only sees their own conversations and
+    # only admins manage documents.
+    auth_enabled: bool = False
+    jwt_secret: str = ""               # HS256 key; empty => random per process (dev only)
+    access_token_minutes: int = 15
+    refresh_token_days: int = 14
+    allow_registration: bool = True    # self sign-up with email + password
+    admin_emails: str = ""             # comma-separated: these accounts get the admin role
+    min_password_length: int = 8
+    cookie_secure: bool = False        # True behind HTTPS (refresh cookie only sent over TLS)
+    login_attempts_per_minute: int = 5 # per IP+email, against password guessing
+    # Google sign-in (OpenID Connect). Enabled when both are set.
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    public_base_url: str = "http://localhost:8000"   # where /api/auth/google/callback is reachable
+    frontend_url: str = "http://localhost:5173"      # where to send the browser after Google login
+
+    # Guardrails: an input safety classifier (NemoGuard) runs in parallel with the
+    # router; unsafe requests get a refusal. Retrieved web/tool/document text is
+    # scanned for prompt-injection phrases before it reaches the LLM.
+    guardrails_enabled: bool = True
+    guard_model: str = "nvidia/llama-3.1-nemotron-safety-guard-8b-v3"
+    guard_timeout: float = 5.0
+    # Unsafe categories that do NOT block (a user sharing their own contact details
+    # is flagged "PII/Privacy" by the classifier but is not an attack).
+    guard_allowed_categories: str = "PII/Privacy"
+    # Mask e-mails, phone numbers, ID / card numbers in logs and traces.
+    pii_redaction: bool = True
+
     # ============= API =============
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000"
     max_batch_queries: int = 10

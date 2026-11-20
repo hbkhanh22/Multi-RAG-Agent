@@ -1,5 +1,5 @@
 """
-Request guards: rate limiting and the admin token for document management.
+Request guards: authentication (current user / admin), rate limiting.
 
 The limiter is a sliding window per client (IP, or the Bearer token when present),
 kept in process memory. With N API workers the effective limit is up to N x the
@@ -14,9 +14,11 @@ import time
 from collections import deque
 from typing import Deque, Dict
 
-from fastapi import Header, HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
 from config.settings import settings
+from src.auth.tokens import decode_access_token
+from src.auth.users import ANONYMOUS, User
 from src.observability import metrics
 
 
@@ -53,17 +55,40 @@ class SlidingWindowLimiter:
 
 
 query_limiter = SlidingWindowLimiter(settings.rate_limit_per_minute)
+login_limiter = SlidingWindowLimiter(settings.login_attempts_per_minute)
+
+
+def _bearer(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
 
 
 def client_key(request: Request) -> str:
-    auth = request.headers.get("authorization", "")
-    if auth.lower().startswith("bearer "):
-        return "tok:" + auth[7:][:64]
+    """Rate-limit identity: the signed-in user, else the client IP."""
+    user = getattr(request.state, "user", None)
+    if user is not None and user.id != ANONYMOUS.id:
+        return "user:" + user.id
     return "ip:" + (request.client.host if request.client else "unknown")
 
 
-def rate_limit(request: Request) -> None:
-    """FastAPI dependency for the expensive (LLM) endpoints."""
+def current_user(request: Request) -> User:
+    """The caller. With AUTH_ENABLED=false everyone is the anonymous admin (dev mode).
+    With auth on: a valid access token, or 401."""
+    if not settings.auth_enabled:
+        request.state.user = ANONYMOUS
+        return ANONYMOUS
+    claims = decode_access_token(_bearer(request))
+    if claims is None:
+        raise HTTPException(status_code=401, detail="Not authenticated",
+                            headers={"WWW-Authenticate": "Bearer"})
+    user = User(id=claims["sub"], email=claims.get("email", ""), name=claims.get("name", ""),
+                role=claims.get("role", "user"))
+    request.state.user = user
+    return user
+
+
+def rate_limit(request: Request, user: User = Depends(current_user)) -> None:
+    """FastAPI dependency for the expensive (LLM) endpoints (runs after authentication)."""
     retry = query_limiter.check(client_key(request))
     if retry:
         metrics.record_rate_limited()
@@ -74,11 +99,17 @@ def rate_limit(request: Request) -> None:
         )
 
 
-def require_admin(authorization: str = Header(default=""), x_admin_token: str = Header(default="")) -> None:
-    """Guards document management. Open when ADMIN_TOKEN is unset (dev only)."""
-    expected = settings.admin_token
-    if not expected:
-        return
-    supplied = x_admin_token or (authorization[7:] if authorization.lower().startswith("bearer ") else "")
-    if not supplied or not hmac.compare_digest(supplied, expected):
-        raise HTTPException(status_code=401, detail="Admin token required")
+def require_admin(request: Request) -> User:
+    """Document management: an admin user, or the ADMIN_TOKEN service token (automation).
+    With auth disabled and no ADMIN_TOKEN the endpoints are open (dev only)."""
+    supplied = request.headers.get("x-admin-token", "") or _bearer(request)
+    if settings.admin_token and supplied and hmac.compare_digest(supplied, settings.admin_token):
+        return ANONYMOUS
+    if not settings.auth_enabled:
+        if settings.admin_token:
+            raise HTTPException(status_code=401, detail="Admin token required")
+        return ANONYMOUS
+    user = current_user(request)
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return user

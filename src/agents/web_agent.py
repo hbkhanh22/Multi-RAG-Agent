@@ -8,6 +8,8 @@ import logging
 from .base_agent import BaseAgent
 from src.tools.web_search import web_search_tool, web_scraper_tool
 from config.settings import settings
+from src.guardrails.injection import DATA_RULE, neutralise
+from src.observability import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -106,15 +108,21 @@ class WebAgent(BaseAgent):
     
     def _format_search_results(self, results: List[Dict]) -> str:
         """Format list of search results into markdown context block"""
-        context_parts = []
+        context_parts, removed = [], 0
         for r in results:
+            title, n1 = neutralise(r.get('title') or "")       # web pages are untrusted input
+            snippet, n2 = neutralise(r.get('snippet') or "")
+            removed += n1 + n2
             part = (
                 f"[Source {r['source_id']}]\n"
-                f"Title: {r['title']}\n"
+                f"Title: {title}\n"
                 f"URL: {r['url']}\n"
-                f"Content: {r['snippet']}\n"
+                f"Content: {snippet}\n"
             )
             context_parts.append(part)
+        if removed:
+            logger.warning(f"Neutralised {removed} injection-like phrase(s) in web results")
+            metrics.record_injection("web", removed)
         return "\n".join(context_parts)
     
     def _generate_answer(self, query: str, context: str, on_token=None, history: str = "") -> str:
@@ -126,7 +134,8 @@ class WebAgent(BaseAgent):
             "1. Trả lời trực tiếp, rõ ràng, mạch lạc bằng chính ngôn ngữ người dùng (tiếng Việt nếu người dùng hỏi tiếng Việt).\n"
             "2. Trích dẫn rõ ràng nguồn thông tin bằng cách đặt thẻ [Source N] ngay sau luận điểm tương ứng.\n"
             "3. Nếu các kết quả tìm kiếm mâu thuẫn hoặc không đủ thông tin, hãy nêu rõ điều đó.\n"
-            "4. Định dạng câu trả lời đẹp mắt bằng Markdown (bullet points, bảng, tiêu đề rõ ràng)."
+            "4. Định dạng câu trả lời đẹp mắt bằng Markdown (bullet points, bảng, tiêu đề rõ ràng).\n"
+            + DATA_RULE
         )
         
         prompt = (
