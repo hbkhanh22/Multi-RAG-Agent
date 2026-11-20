@@ -93,10 +93,10 @@ jobs:
             ${{ steps.names.outputs.web }}:latest
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
-      - name: Compose file is valid
-        run: POSTGRES_PASSWORD=x MINIO_ROOT_PASSWORD=xxxxxxxx docker compose -f docker-compose.yml --env-file /dev/null config -q
-        env:
-          NVIDIA_API_KEY: dummy
+      - name: Compose file is valid (with the documented .env template)
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.yml config -q
 
   eval-gate:
     # Retrieval quality gate. Needs the models, the (non-redistributable) documents and
