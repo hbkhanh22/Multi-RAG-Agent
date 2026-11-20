@@ -41,7 +41,7 @@ jobs:
         run: pip install -r requirements-runtime.txt pytest "moto[s3]>=5"
       - name: Byte-compile
         run: python -m compileall -q config src api scripts alembic
-      - name: Alembic migrations (twice: must be idempotent)
+      - name: Alembic migrations, run twice (must be idempotent)
         env:
           DATABASE_URL: ${{ env.TEST_PG_URL }}
         run: |
