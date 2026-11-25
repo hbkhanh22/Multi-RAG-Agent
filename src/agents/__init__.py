@@ -9,6 +9,7 @@ from .supervisor_agent import SupervisorAgent
 from .synthesizer_agent import SynthesizerAgent
 from .web_agent import WebAgent
 from .tool_agent import ToolAgent
+from .file_agent import FileAgent
 
 __all__ = [
     "BaseAgent",
@@ -18,4 +19,5 @@ __all__ = [
     "SynthesizerAgent",
     "WebAgent",
     "ToolAgent",
+    "FileAgent",
 ]

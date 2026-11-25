@@ -12,6 +12,7 @@ class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
     domain: Optional[str] = Field(None, description="Optional domain filter")
     conversation_id: Optional[str] = Field(None, max_length=64, description="Continue this conversation; omitted => new one")
+    attachment_ids: List[str] = Field(default=[], max_length=50, description="Files sent with this message (POST /api/attachments)")
     include_metadata: bool = Field(default=False)
     debug: bool = Field(default=False)
 

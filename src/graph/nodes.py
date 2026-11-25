@@ -15,7 +15,7 @@ from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
 
 from src.agents.base_agent import BaseAgent
-from src.agents import RouterAgent, RAGAgent, SupervisorAgent, SynthesizerAgent, WebAgent, ToolAgent
+from src.agents import RouterAgent, RAGAgent, SupervisorAgent, SynthesizerAgent, WebAgent, ToolAgent, FileAgent
 from src.graph.state import AgentState
 from src.utils import Timer
 from src.memory import condense_prompt, format_history, history_to_messages, needs_condense
@@ -62,7 +62,9 @@ rag_agents = {
     "general": RAGAgent("general"),
 }
 tool_agent = ToolAgent()
-supervisor_agent = SupervisorAgent(agents={**rag_agents, "web": web_agent, "tools": tool_agent})
+file_agent = FileAgent()
+supervisor_agent = SupervisorAgent(agents={**rag_agents, "web": web_agent, "tools": tool_agent,
+                                           "files": file_agent})
 chat_agent = ChatAgent()
 judge_agent = AnswerJudge()
 refiner_agent = AnswerRefiner()
@@ -73,11 +75,22 @@ def _q(state: AgentState) -> str:
     return state.get("standalone_query") or state["query"]
 
 
+def _new_files(state: AgentState) -> List[Dict[str, Any]]:
+    """Files sent with this very message."""
+    return [a for a in state.get("attachments") or [] if a.get("new")]
+
+
+def _agent_files(state: AgentState) -> List[Dict[str, Any]]:
+    """What the File Agent reads: the files just sent, else those sent earlier."""
+    return _new_files(state) or (state.get("attachments") or [])
+
+
 def condense_node(state: AgentState) -> Dict[str, Any]:
     """Rewrite a follow-up question into a standalone one (skipped when not needed)."""
     query = state["query"]
     history = state.get("history") or []
-    if not needs_condense(query, history) or fast_route(query):
+    # with a new file, "this" / "it" means that file, not an earlier topic
+    if _new_files(state) or not needs_condense(query, history) or fast_route(query):
         return {"standalone_query": query}
 
     emit({"type": "stage", "stage": "understanding"})
@@ -104,7 +117,9 @@ def router_node(state: AgentState) -> Dict[str, Any]:
     raw_query = state.get("query") or query          # guard what the user actually typed
     expanded: List[str] = []
     verdict = None
-    smalltalk = fast_route(query) is not None
+    files = state.get("attachments") or []
+    new_files = _new_files(state)
+    smalltalk = fast_route(query) is not None and not new_files
     run_guard = settings.guardrails_enabled and not smalltalk
     run_expansion = settings.parallel_expansion and not smalltalk
 
@@ -113,7 +128,7 @@ def router_node(state: AgentState) -> Dict[str, Any]:
                      if run_guard else None)
         exp_fut = (pool.submit(contextvars.copy_context().run, query_expander.get_expanded_queries,
                                query, None, ["multi_query"]) if run_expansion else None)
-        result = router_agent.run({"query": query})
+        result = router_agent.run({"query": query, "attachments": [a["filename"] for a in files]})
         if exp_fut is not None:
             try:
                 expanded = exp_fut.result()
@@ -129,6 +144,11 @@ def router_node(state: AgentState) -> Dict[str, Any]:
 
     route = result.get("route", "general")
     agents = result.get("agents", ["general"])
+    if new_files:
+        # the user just sent a file: it is always read; other agents only join when asked for
+        extra = [a for a in agents if a in ("sport", "tech", "general", "web")] if route == "multi" else []
+        agents = ["files", *extra]
+        route = "multi" if extra else "files"
     logger.info(f"Route: {route}, Agents: {agents}")
     emit({"type": "route", "route": route, "agents": agents})
 
@@ -156,15 +176,24 @@ def blocked_node(state: AgentState) -> Dict[str, Any]:
     }
 
 
+def _token_event(text: str, draft: bool = False) -> Dict[str, Any]:
+    """Token event; `draft` marks text that may still be replaced before the final answer
+    (the client must not present it as the answer)."""
+    return {"type": "token", "text": text, **({"draft": True} if draft else {})}
+
+
 def _run_agent(name: str, agent, state: AgentState) -> Dict[str, Any]:
-    emit({"type": "stage", "stage": "retrieving"})
+    emit({"type": "stage", "stage": "reading_files" if name == "files" else "retrieving"})
+    # The judge may have the answer rewritten; the tool loop streams text between tool calls
+    draft = name == "tools" or (settings.self_eval_enabled and settings.self_eval_max_rounds > 0)
     with Timer(f"{name} agent"):
         # Single-agent route: the answer is passed through unchanged, so stream it live
         result = agent.run({
             "query": _q(state),
             "history": format_history(state.get("history") or []),
             "expanded_queries": state.get("expanded_queries") or [],
-            "on_token": lambda t: emit({"type": "token", "text": t}),
+            "attachments": _agent_files(state) if name == "files" else [],
+            "on_token": lambda t: emit(_token_event(t, draft)),
             "on_event": emit,
         })
     logger.info(f"{name} result: success={result.get('success')}")
@@ -198,6 +227,12 @@ def tool_agent_node(state: AgentState) -> Dict[str, Any]:
     return _run_agent("tools", tool_agent, state)
 
 
+def file_agent_node(state: AgentState) -> Dict[str, Any]:
+    """Answer from the files attached to the conversation"""
+    logger.info("=== FILE AGENT NODE ===")
+    return _run_agent("files", file_agent, state)
+
+
 def supervisor_node(state: AgentState) -> Dict[str, Any]:
     """Run several specialist agents in parallel for multi-domain queries"""
     logger.info("=== SUPERVISOR NODE ===")
@@ -207,6 +242,7 @@ def supervisor_node(state: AgentState) -> Dict[str, Any]:
         result = supervisor_agent.run({
             "query": _q(state),
             "active_agents": state["active_agents"],
+            "attachments": _agent_files(state),
             "history": format_history(state.get("history") or []),
             "expanded_queries": state.get("expanded_queries") or [],
             "on_event": emit,
@@ -304,7 +340,7 @@ def refine_node(state: AgentState) -> Dict[str, Any]:
                 state.get("final_answer", ""),
                 contexts,
                 state.get("evaluation") or {},
-                on_token=lambda t: emit({"type": "token", "text": t}),
+                on_token=lambda t: emit(_token_event(t, draft=True)),
             )
     except Exception as e:
         logger.warning(f"Refinement failed, keeping the previous answer: {e}")
@@ -312,7 +348,7 @@ def refine_node(state: AgentState) -> Dict[str, Any]:
 
     if not revised:
         emit({"type": "reset"})
-        emit({"type": "token", "text": state.get("final_answer", "")})
+        emit(_token_event(state.get("final_answer", ""), draft=True))
         return {"iteration": rounds}
     return {
         "final_answer": revised,

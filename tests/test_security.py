@@ -74,8 +74,6 @@ def test_register_login_me_and_roles(client):
                                                    "password": "another pass"}).status_code == 400
     assert client.post("/api/auth/register", json={"email": "short@example.com",
                                                    "password": "123"}).status_code == 400
-    assert _register(client, "boss@example.com")["user"]["role"] == "admin"   # ADMIN_EMAILS
-
     ok = client.post("/api/auth/login", json={"email": "alice@example.com", "password": "correct horse 1"})
     assert ok.status_code == 200 and ok.json()["access_token"]
     bad_pw = client.post("/api/auth/login", json={"email": "alice@example.com", "password": "nope"})
@@ -91,7 +89,8 @@ def test_login_is_throttled(client):
     assert codes[:5] == [401] * 5 and codes[5] == 429
 
 
-def test_refresh_rotation_reuse_detection_and_logout(client):
+def test_refresh_rotation_reuse_detection_and_logout(client, secure, monkeypatch):
+    monkeypatch.setattr(secure, "refresh_reuse_grace_seconds", -1)  # strict: no grace period
     _register(client, "carol@example.com")
     first = client.cookies.get("rag_refresh")
 
@@ -166,9 +165,107 @@ def test_cancel_only_by_owner():
         runtime.unregister(ctx)
 
 
+def _make_admin(c, email="boss@example.com", password="boss password 1"):
+    from src.auth.users import set_admin
+
+    set_admin(email, password)
+    return c.post("/api/auth/login", json={"email": email, "password": password}).json()
+
+
+@pytest.mark.parametrize("email", ["boss@example.com", "  BOSS@Example.com "])
+def test_admin_email_cannot_be_self_registered(client, email):
+    r = client.post("/api/auth/register", json={"email": email, "password": "correct horse 1"})
+    taken = [client.post("/api/auth/register", json={"email": "t@example.com", "password": "correct horse 1"})
+             for _ in range(2)][1]
+    assert r.status_code == 400 and r.json() == taken.json()       # indistinguishable from a taken address
+    assert "rag_refresh" not in r.cookies
+
+
+def test_squatted_account_never_becomes_admin_by_password(client, secure, monkeypatch):
+    monkeypatch.setattr(secure, "admin_emails", "")
+    squat = _register(client, "late@example.com")
+    monkeypatch.setattr(secure, "admin_emails", "late@example.com")  # added after the squatter
+    r = client.post("/api/auth/login", json={"email": "late@example.com", "password": "correct horse 1"}).json()
+    assert r["user"]["role"] == "user"
+    assert client.get("/api/documents", headers=_auth(r["access_token"])).status_code == 403
+    cookie = client.cookies.get("rag_refresh")
+
+    # the real owner arrives through Google: admin, and the squatter is locked out
+    from src.auth.users import upsert_google_user
+    owner = upsert_google_user("g-1", "late@example.com", "Late", True)
+    assert owner.id == squat["user"]["id"] and owner.is_admin and not owner.has_password
+    assert client.post("/api/auth/login", json={"email": "late@example.com",
+                                                "password": "correct horse 1"}).status_code == 401
+    client.cookies.clear()
+    client.cookies.set("rag_refresh", cookie, path="/api/auth")
+    assert client.post("/api/auth/refresh").status_code == 401
+
+
+def test_operator_cli(client, secure, monkeypatch, capsys):
+    import io as _io
+
+    from src.auth import cli
+    import api.routes as routes
+
+    def run(*args, password="operator pass 1"):
+        monkeypatch.setattr("sys.stdin", _io.StringIO(password + chr(10)))
+        return cli.main(list(args))
+
+    login = lambda pw: client.post("/api/auth/login", json={"email": "boss@example.com", "password": pw})
+    assert run("admin", "boss@example.com", password="x") == 1                 # too short
+    assert run("admin", "Boss@example.com") == 0
+    tok = login("operator pass 1").json()
+    assert tok["user"]["role"] == "admin"
+    assert client.get("/api/documents", headers=_auth(tok["access_token"])).status_code == 200
+
+    # taking over a squatted account replaces its password and ends its sessions
+    _register(client, "squat@example.com")
+    assert run("admin", "squat@example.com", password="owner password") == 0
+    assert client.post("/api/auth/refresh").status_code == 401
+    assert client.post("/api/auth/login", json={"email": "squat@example.com",
+                                                "password": "correct horse 1"}).status_code == 401
+
+    cid = routes.conversation_store.create_conversation()
+    routes.conversation_store.add_exchange(cid, "old question", "a")
+    assert client.get("/api/conversations", headers=_auth(tok["access_token"])).json()["conversations"] == []
+    assert run("claim", "boss@example.com") == 0
+    assert client.get("/api/conversations", headers=_auth(tok["access_token"])).json()["conversations"]
+
+    # demotion is effective at once, although the access token still says "admin"
+    assert run("demote", "boss@example.com") == 0
+    assert client.get("/api/documents", headers=_auth(tok["access_token"])).status_code == 403
+    assert run("reset-password", "boss@example.com", password="another pass 2") == 0
+    assert login("operator pass 1").status_code == 401 and login("another pass 2").status_code == 200
+    assert run("demote", "ghost@example.com") == 1 and run("list") == 0
+    assert "boss@example.com	user" in capsys.readouterr().out
+
+
+def test_refresh_grace_for_tabs_but_not_after_logout(client):
+    _register(client, "tabs@example.com")
+    old = client.cookies.get("rag_refresh")
+
+    def refresh(token):
+        client.cookies.clear()
+        client.cookies.set("rag_refresh", token, path="/api/auth")
+        return client.post("/api/auth/refresh")
+
+    r1, r2 = refresh(old), refresh(old)                             # two tabs, same cookie
+    assert r1.status_code == r2.status_code == 200
+    last = r2.cookies.get("rag_refresh")
+    client.cookies.clear()
+    client.cookies.set("rag_refresh", last, path="/api/auth")
+    client.post("/api/auth/logout")
+    for t in (old, r1.cookies.get("rag_refresh"), last):
+        assert refresh(t).status_code == 401
+
+
+def test_non_ascii_refresh_cookie_is_refused(client):
+    assert client.post("/api/auth/refresh", headers={"Cookie": "rag_refresh=00e9".encode()}).status_code == 401
+
+
 def test_documents_need_admin(client, secure, monkeypatch):
     user = _register(client, "user@example.com")
-    admin = _register(client, "boss@example.com")
+    admin = _make_admin(client)
     assert client.get("/api/documents").status_code == 401
     assert client.get("/api/documents", headers=_auth(user["access_token"])).status_code == 403
     assert client.get("/api/documents", headers=_auth(admin["access_token"])).status_code == 200
@@ -222,7 +319,8 @@ def test_google_sign_in_flow(client, secure, monkeypatch):
     linked = client.get("/api/auth/google/callback?code=x&state=s", follow_redirects=False)
     assert linked.headers["location"].endswith("#signed_in"), linked.headers["location"]
     me = client.post("/api/auth/refresh").json()["user"]
-    assert me["email"] == "pat@example.com" and me["has_password"] and me["google_linked"]
+    assert me["email"] == "pat@example.com" and me["google_linked"]
+    assert me["has_password"] is False       # unverified password dropped (account pre-hijacking)
 
     claims.update(sub="g-789", email="eve@example.com", email_verified=False)
     client.get("/api/auth/google/login", follow_redirects=False)

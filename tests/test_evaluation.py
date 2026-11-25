@@ -130,6 +130,7 @@ def test_stream_emits_reset_before_refined_tokens(fake_llm, fake_web, tech_ready
                              {"faithfulness": 5, "relevance": 5, "completeness": 5}]
     events = list(stream_workflow(MCP_QUERY))
     types = [e["type"] for e in events]
+    assert all(e.get("draft") for e in events if e["type"] == "token")  # nothing definitive before final
     reset = types.index("reset")
     assert "evaluation" in types[:reset]
     streamed_after = "".join(e["text"] for e in events[reset:] if e["type"] == "token")

@@ -18,6 +18,7 @@ from .nodes import (
     general_rag_node,
     web_agent_node,
     tool_agent_node,
+    file_agent_node,
     supervisor_node,
     synthesizer_node,
     evaluator_node,
@@ -43,6 +44,7 @@ def build_agent_graph():
     graph.add_node("general_agent", general_rag_node)
     graph.add_node("web_agent", web_agent_node)
     graph.add_node("tool_agent", tool_agent_node)
+    graph.add_node("file_agent", file_agent_node)
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("synthesizer", synthesizer_node)
     graph.add_node("evaluator", evaluator_node)
@@ -63,12 +65,13 @@ def build_agent_graph():
             "general_agent": "general_agent",
             "web_agent": "web_agent",
             "tool_agent": "tool_agent",
+            "file_agent": "file_agent",
             "direct_chat_agent": "direct_chat_agent",
             "blocked": "blocked",
         },
     )
 
-    for node in ("sport_agent", "tech_agent", "general_agent", "web_agent", "tool_agent", "supervisor"):
+    for node in ("sport_agent", "tech_agent", "general_agent", "web_agent", "tool_agent", "file_agent", "supervisor"):
         graph.add_edge(node, "synthesizer")
 
     graph.add_edge("direct_chat_agent", END)
@@ -81,12 +84,14 @@ def build_agent_graph():
     return graph.compile()
 
 
-def create_initial_state(query: str, history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+def create_initial_state(query: str, history: Optional[List[Dict[str, str]]] = None,
+                         attachments: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Create initial state for graph execution"""
     return {
         "query": query,
         "history": history or [],
         "standalone_query": "",
+        "attachments": attachments or [],
         "expanded_queries": [],
         "guardrail": {},
         "messages": [HumanMessage(content=query)],
@@ -128,7 +133,8 @@ def _run_config(run_ctx, extra: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 def stream_workflow(query: str, history: Optional[List[Dict[str, str]]] = None,
                     run_ctx: Optional[runtime.RunContext] = None,
-                    config: Optional[Dict[str, Any]] = None):
+                    config: Optional[Dict[str, Any]] = None,
+                    attachments: Optional[List[Dict[str, Any]]] = None):
     """
     Run the workflow and yield events as it progresses:
       {"type": "stage"|"route"|"token", ...}  while running
@@ -142,7 +148,7 @@ def stream_workflow(query: str, history: Optional[List[Dict[str, str]]] = None,
     try:
         if app is None:
             app = build_agent_graph()
-        initial_state = create_initial_state(query, history)
+        initial_state = create_initial_state(query, history, attachments)
         start = time.time()
         initial_state["start_time"] = start
 
@@ -178,7 +184,8 @@ def stream_workflow(query: str, history: Optional[List[Dict[str, str]]] = None,
 
 def run_workflow(query: str, debug: bool = False, history: Optional[List[Dict[str, str]]] = None,
                  run_ctx: Optional[runtime.RunContext] = None,
-                 config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                 config: Optional[Dict[str, Any]] = None,
+                 attachments: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """
     Run the multi-RAG agent workflow.
 
@@ -190,7 +197,7 @@ def run_workflow(query: str, debug: bool = False, history: Optional[List[Dict[st
         if app is None:
             app = build_agent_graph()
 
-        initial_state = create_initial_state(query, history)
+        initial_state = create_initial_state(query, history, attachments)
         start_time = time.time()
         initial_state["start_time"] = start_time
 

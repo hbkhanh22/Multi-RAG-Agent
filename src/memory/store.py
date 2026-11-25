@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from sqlalchemy import delete, exists, insert, select, update
 
-from src.storage.db import conversations, get_engine, messages, now_iso
+from src.storage.db import attachments, conversations, get_engine, messages, now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +56,15 @@ class ConversationStore:
 
     def add_exchange(self, cid: str, user_text: str, assistant_text: str,
                      meta: Optional[Dict[str, Any]] = None,
-                     usage: Optional[Dict[str, int]] = None) -> None:
+                     usage: Optional[Dict[str, int]] = None,
+                     files: Optional[List[Dict[str, Any]]] = None) -> None:
         """Append one user+assistant turn atomically (and title the chat on first turn)."""
         now = now_iso()
         usage = usage or {}
         with self.engine.begin() as c:
             c.execute(insert(messages).values(
-                conversation_id=cid, role="user", content=user_text, created_at=now))
+                conversation_id=cid, role="user", content=user_text, created_at=now,
+                meta={"attachments": files} if files else None))
             c.execute(insert(messages).values(
                 conversation_id=cid, role="assistant", content=assistant_text,
                 meta=meta or None, created_at=now,
@@ -79,11 +81,17 @@ class ConversationStore:
         """Last `limit` messages, oldest first: [{role, content}]."""
         with self.engine.connect() as c:
             rows = c.execute(
-                select(messages.c.role, messages.c.content)
+                select(messages.c.role, messages.c.content, messages.c.meta)
                 .where(messages.c.conversation_id == cid)
                 .order_by(messages.c.id.desc()).limit(limit)
             ).all()
-        return [{"role": r.role, "content": r.content} for r in reversed(rows)]
+        out = []
+        for r in reversed(rows):
+            content = r.content
+            if r.role == "user" and isinstance(r.meta, dict) and r.meta.get("attachments"):
+                content += f" [Attached: {', '.join(a['filename'] for a in r.meta['attachments'])}]"
+            out.append({"role": r.role, "content": content})
+        return out
 
     def get_messages(self, cid: str) -> List[Dict[str, Any]]:
         """Full history for the UI, including assistant metadata (sources...)."""
@@ -117,6 +125,7 @@ class ConversationStore:
             if c.execute(select(conversations.c.id).where(*self._owned(cid, user_id))).first() is None:
                 return False
             # explicit child delete: SQLite only cascades with PRAGMA foreign_keys
+            c.execute(delete(attachments).where(attachments.c.conversation_id == cid))
             c.execute(delete(messages).where(messages.c.conversation_id == cid))
             return c.execute(delete(conversations).where(conversations.c.id == cid)).rowcount > 0
 

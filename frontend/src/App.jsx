@@ -1,233 +1,34 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import {
-  AlertCircle,
-  Bot,
-  BrainCircuit,
-  Check,
-  ChevronDown,
-  Clock3,
-  Code2,
-  Copy,
-  Cpu,
-  Database,
-  ExternalLink,
-  FileText,
-  Globe,
-  Layers,
-  Loader2,
-  MessageSquare,
-  Moon,
-  Plus,
-  Send,
-  Sparkles,
-  Sun,
-  Trash2,
-  Trophy,
-  Wrench,
-  User,
-  Zap,
-  ShieldCheck,
-} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowDown, PanelLeft, SquarePen, WifiOff } from "lucide-react";
+import Sidebar from "./components/Sidebar.jsx";
+import Composer from "./components/Composer.jsx";
+import Message from "./components/Message.jsx";
+import { Greeting, Suggestions } from "./components/EmptyState.jsx";
+import { API_BASE_URL, HEALTH_LABELS, HEALTH_POLL_MS, REQUEST_TIMEOUT_MS, STAGES, routeInfo } from "./lib/constants.js";
+import { apiFetch } from "./lib/api.js";
+import { useAttachments } from "./lib/useAttachments.js";
+import { useMediaQuery } from "./lib/useTheme.js";
+import { storage, uid } from "./lib/utils.js";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-const REQUEST_TIMEOUT_MS = 180000;
-const HEALTH_POLL_MS = 30000;
+const MOBILE_QUERY = "(max-width: 768px)";
 
-// crypto.randomUUID only exists in secure contexts (https / localhost); fall back for LAN http access.
-const uid = () =>
-  globalThis.crypto?.randomUUID?.() ?? `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+/* ------------------------------------------------------------------ hooks */
 
-const SAMPLE_QUESTIONS = [
-  {
-    icon: Globe,
-    domain: "Live Web",
-    label: "Tin tức trực tuyến",
-    prompt: "Tìm kiếm trên web tin tức mới nhất hôm nay về các mô hình AI agent",
-  },
-  {
-    icon: Code2,
-    domain: "Tech",
-    label: "Giao thức MCP",
-    prompt: "Model Context Protocol (MCP) là gì, vì sao nó quan trọng và các tính năng cốt lõi?",
-  },
-  {
-    icon: Trophy,
-    domain: "Sport",
-    label: "Luật & lịch sử thể thao",
-    prompt: "Luật việt vị trong bóng đá được quy định thế nào và VAR hỗ trợ ra sao?",
-  },
-  {
-    icon: Layers,
-    domain: "RAG Architecture",
-    label: "Kiến trúc Multi-RAG",
-    prompt: "So sánh ưu nhược điểm giữa Vector Search thông thường và Hybrid Search kết hợp Reranker?",
-  },
-];
-
-const STAGE_LABELS = {
-  understanding: "Đang hiểu ngữ cảnh cuộc trò chuyện...",
-  routing: "Đang phân loại câu hỏi...",
-  retrieving: "Đang tra cứu tài liệu & tìm kiếm...",
-  synthesizing: "Đang tổng hợp câu trả lời...",
-  evaluating: "Đang kiểm tra chất lượng câu trả lời...",
-  refining: "Đang cải thiện câu trả lời theo nhận xét...",
-};
-
-const STATUS_LABELS = {
-  checking: "Đang kiểm tra",
-  online: "Sẵn sàng",
-  degraded: "Hoạt động một phần",
-  offline: "Mất kết nối",
-};
-
-const INITIAL_MESSAGES = [
-  {
-    id: "welcome-msg",
-    role: "assistant",
-    content:
-      "### 👋 Xin chào! Tôi là Multi-RAG Autonomous Agent\nTôi có thể hỗ trợ bạn tra cứu và phân tích sâu về **Kỹ thuật công nghệ (Tech)**, **Thể thao (Sport)** từ kho tài liệu nội bộ, đồng thời **Tìm kiếm thông tin thời sự trực tiếp trên Internet (Web Search)**.\n\n*Hãy nhập câu hỏi bên dưới hoặc chọn gợi ý nhanh để bắt đầu!*",
-    meta: {
-      route: "ready",
-      confidence: 1,
-    },
-  },
-];
-
-export default function App() {
-  const [messages, setMessages] = useState(INITIAL_MESSAGES);
-  const [input, setInput] = useState("");
-  const [isSending, setIsSending] = useState(false);
-  const [error, setError] = useState("");
-  const [stage, setStage] = useState("routing");
-  const [streamingId, setStreamingId] = useState(null);
-  const [includeMetadata, setIncludeMetadata] = useState(true);
-  const [debug, setDebug] = useState(false);
-  const [theme, setTheme] = useState(() => localStorage.getItem("rag_theme") || "dark");
-  const [copiedId, setCopiedId] = useState(null);
-  const [apiStatus, setApiStatus] = useState("checking"); // checking | online | degraded | offline
-  const abortRef = useRef(null);
-  const [conversationId, setConversationId] = useState(() => {
-    try {
-      return localStorage.getItem("rag_conversation_id") || null;
-    } catch {
-      return null;
-    }
-  });
-  const [conversations, setConversations] = useState([]);
-
-  const inputRef = useRef(null);
-  const messagesEndRef = useRef(null);
-
-  useEffect(() => {
-    localStorage.setItem("rag_theme", theme);
-    document.documentElement.setAttribute("data-theme", theme);
-  }, [theme]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isSending]);
-
-  function persistConversationId(id) {
-    setConversationId(id);
-    try {
-      if (id) localStorage.setItem("rag_conversation_id", id);
-      else localStorage.removeItem("rag_conversation_id");
-    } catch {
-      // ignore (private mode)
-    }
-  }
-
-  async function refreshConversations() {
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/conversations`);
-      if (res.ok) setConversations((await res.json()).conversations || []);
-    } catch {
-      // sidebar history is optional
-    }
-  }
-
-  function toUiMessages(stored) {
-    return stored.map((m) => ({
-      id: uid(),
-      role: m.role,
-      content: m.content,
-      meta:
-        m.role === "assistant" && m.meta
-          ? {
-              route: m.meta.route,
-              confidence: m.meta.confidence,
-              success: m.meta.success,
-              sources: m.meta.sources || [],
-              keyThemes: m.meta.key_themes || [],
-              processingTime: m.meta.processing_time,
-              toolCalls: m.meta.tool_calls || [],
-            }
-          : undefined,
-    }));
-  }
-
-  async function openConversation(id) {
-    if (isSending || id === conversationId) return;
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/conversations/${id}`);
-      if (!res.ok) throw new Error("not found");
-      const data = await res.json();
-      setMessages([INITIAL_MESSAGES[0], ...toUiMessages(data.messages || [])]);
-      persistConversationId(id);
-      setError("");
-    } catch {
-      persistConversationId(null);
-      setMessages(INITIAL_MESSAGES);
-      refreshConversations();
-    }
-  }
-
-  async function deleteConversation(id, e) {
-    e?.stopPropagation();
-    if (isSending) return;
-    try {
-      await fetch(`${API_BASE_URL}/api/conversations/${id}`, { method: "DELETE" });
-    } catch {
-      // ignore
-    }
-    if (id === conversationId) {
-      persistConversationId(null);
-      setMessages(INITIAL_MESSAGES);
-    }
-    refreshConversations();
-  }
-
-  // Restore the last conversation + sidebar history on first load
-  useEffect(() => {
-    refreshConversations();
-    if (conversationId) {
-      (async () => {
-        try {
-          const res = await fetch(`${API_BASE_URL}/api/conversations/${conversationId}`);
-          if (res.status === 404) return persistConversationId(null); // deleted elsewhere
-          if (!res.ok) return;
-          const data = await res.json();
-          setMessages([INITIAL_MESSAGES[0], ...toUiMessages(data.messages || [])]);
-        } catch {
-          // backend offline: keep the id, start with the welcome message
-        }
-      })();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Real backend health instead of a hard-coded "online" label
+function useHealth() {
+  const [health, setHealth] = useState({ status: "checking", components: {} });
   useEffect(() => {
     let cancelled = false;
     async function check() {
       try {
         const res = await fetch(`${API_BASE_URL}/api/health`);
         const data = await res.json().catch(() => ({}));
-        if (!cancelled) setApiStatus(res.ok ? (data.status === "healthy" ? "online" : "degraded") : "offline");
+        if (cancelled) return;
+        setHealth({
+          status: res.ok ? (data.status === "healthy" ? "online" : "degraded") : "offline",
+          components: data.components || {},
+        });
       } catch {
-        if (!cancelled) setApiStatus("offline");
+        if (!cancelled) setHealth({ status: "offline", components: {} });
       }
     }
     check();
@@ -237,130 +38,313 @@ export default function App() {
       clearInterval(timer);
     };
   }, []);
+  return health;
+}
 
-  // Grow the textarea with its content (up to a cap)
+/* ---------------------------------------------------- trace (agent steps) */
+
+const finishActive = (trace, to = "done") => trace.map((s) => (s.status === "active" ? { ...s, status: to } : s));
+
+function enterStage(trace, stage) {
+  const key = `stage-${stage}`;
+  const done = finishActive(trace);
+  if (done.some((s) => s.key === key)) return done.map((s) => (s.key === key ? { ...s, status: "active" } : s));
+  return [...done, { key, label: STAGES[stage] || stage, status: "active" }];
+}
+
+function storedToUi(stored) {
+  return stored.map((m) => ({
+    id: uid(),
+    role: m.role,
+    content: m.content,
+    status: "done",
+    files: m.role === "user" ? m.meta?.attachments : undefined,
+    meta:
+      m.role === "assistant" && m.meta
+        ? {
+            route: m.meta.route,
+            confidence: m.meta.confidence,
+            sources: m.meta.sources || [],
+            keyThemes: m.meta.key_themes || [],
+            processingTime: m.meta.processing_time,
+            toolCalls: m.meta.tool_calls || [],
+            evaluation: m.meta.evaluation || null,
+          }
+        : undefined,
+  }));
+}
+
+/* -------------------------------------------------------------------- app */
+
+/** `theme`: [value, set]. `user`: the signed-in account, absent when the server has no authentication. */
+export default function App({ theme: [theme, setTheme], user }) {
+  const isMobile = useMediaQuery(MOBILE_QUERY);
+  const health = useHealth();
+
+  const [sidebarOpen, setSidebarOpen] = useState(() => !window.matchMedia(MOBILE_QUERY).matches && storage.get("rag_sidebar") !== "closed");
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const attachments = useAttachments();
+  const [includeMetadata, setIncludeMetadata] = useState(() => storage.get("rag_metadata", "true") === "true");
+  const [debug, setDebug] = useState(false);
+  const [conversationId, setConversationId] = useState(() => storage.get("rag_conversation_id"));
+  const [conversations, setConversations] = useState([]);
+  const [atBottom, setAtBottom] = useState(true);
+
+  const inputRef = useRef(null);
+  const scrollRef = useRef(null);
+  const abortRef = useRef(null);
+  const stoppedRef = useRef(false);
+  const atBottomRef = useRef(true);
+  const showAnswerTopRef = useRef(false); // the final answer just replaced a draft
+
+  useEffect(() => storage.set("rag_metadata", String(includeMetadata)), [includeMetadata]);
   useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-  }, [input]);
+    if (!isMobile) storage.set("rag_sidebar", sidebarOpen ? "open" : "closed");
+  }, [sidebarOpen, isMobile]);
+  useEffect(() => {
+    if (isMobile) setSidebarOpen(false);
+  }, [isMobile]);
 
-  const canSend = input.trim().length > 0 && !isSending;
+  const persistConversationId = useCallback((id) => {
+    setConversationId(id);
+    storage.set("rag_conversation_id", id);
+  }, []);
 
-  const latestMeta = useMemo(() => {
-    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-    return lastAssistant?.meta || null;
-  }, [messages]);
+  const focusInput = () => requestAnimationFrame(() => inputRef.current?.focus());
+  const closeSidebarOnMobile = () => isMobile && setSidebarOpen(false);
 
-  const handleCopy = async (id, text) => {
+  /* ---------- scrolling: follow the stream only while the user is at the bottom */
+
+  const scrollToBottom = useCallback((behavior = "auto") => {
+    const el = scrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior });
+  }, []);
+
+  function handleScroll() {
+    const el = scrollRef.current;
+    const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    atBottomRef.current = bottom;
+    setAtBottom(bottom);
+  }
+
+  useEffect(() => {
+    if (showAnswerTopRef.current) {
+      // the whole answer appears at once: show its beginning, not its end
+      showAnswerTopRef.current = false;
+      scrollRef.current?.querySelector(".threadInner")?.lastElementChild?.scrollIntoView({ block: "start" });
+    } else if (atBottomRef.current) scrollToBottom();
+  }, [messages, scrollToBottom]);
+
+  /* ---------- conversations */
+
+  const refreshConversations = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(text);
-      setCopiedId(id);
-      setTimeout(() => setCopiedId(null), 2000);
+      const res = await apiFetch("/api/conversations");
+      if (res.ok) setConversations((await res.json()).conversations || []);
+    } catch {
+      // history is optional
+    }
+  }, []);
+
+  const loadConversation = useCallback(
+    async (id) => {
+      const res = await apiFetch(`/api/conversations/${id}`);
+      if (res.status === 404) {
+        persistConversationId(null);
+        setMessages([]);
+        return;
+      }
+      if (!res.ok) throw new Error("load failed");
+      const data = await res.json();
+      atBottomRef.current = true;
+      setMessages(storedToUi(data.messages || []));
+      persistConversationId(id);
+    },
+    [persistConversationId]
+  );
+
+  // signing out unmounts the chat: do not leave an answer running in the background
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  useEffect(() => {
+    refreshConversations();
+    if (conversationId) loadConversation(conversationId).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function openConversation(id) {
+    closeSidebarOnMobile();
+    if (id === conversationId) return;
+    stopGeneration();
+    attachments.clear({ discard: true });
+    try {
+      await loadConversation(id);
+    } catch {
+      refreshConversations();
+    }
+  }
+
+  async function deleteConversation(id) {
+    try {
+      await apiFetch(`/api/conversations/${id}`, { method: "DELETE" });
     } catch {
       // ignore
     }
-  };
+    if (id === conversationId) startNewChat();
+    refreshConversations();
+  }
 
-  async function submitQuery(queryText) {
-    const query = (queryText || input).trim();
-    if (!query || isSending) return;
-
-    const userMsg = {
-      id: uid(),
-      role: "user",
-      content: query,
-    };
-
-    setMessages((prev) => [...prev, userMsg]);
+  function startNewChat() {
+    stopGeneration();
+    persistConversationId(null);
+    setMessages([]);
     setInput("");
-    setError("");
+    attachments.clear({ discard: true });
+    closeSidebarOnMobile();
+    focusInput();
+  }
+
+  function stopGeneration() {
+    if (abortRef.current) {
+      stoppedRef.current = true;
+      abortRef.current.abort();
+    }
+  }
+
+  /* ---------- sending + streaming */
+
+  /** `resend`: files of a failed turn being retried (default: the files in the composer). */
+  async function submitQuery(text, resend) {
+    if (isSending || (!resend && attachments.busy)) return;
+    const files = resend || attachments.ready;
+    const query = text || (files.length > 0 ? "Tóm tắt nội dung tệp đính kèm." : "");
+    if (!query) return;
+    if (!resend) attachments.clear();
+
+    const assistantId = uid();
+    const startedAt = performance.now();
+    const patch = (fn) => setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, ...fn(m) } : m)));
+
+    setMessages((prev) => [
+      ...prev,
+      { id: uid(), role: "user", content: query, files },
+      { id: assistantId, role: "assistant", content: "", status: "pending", trace: [], query, files },
+    ]);
+    setInput("");
     setIsSending(true);
+    atBottomRef.current = true;
+    requestAnimationFrame(() => scrollToBottom("smooth"));
 
     const controller = new AbortController();
     abortRef.current = controller;
+    stoppedRef.current = false;
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let streamed = ""; // definitive text
+    let draft = ""; // text that may still be rewritten: shown apart from the answer
+    let replaceDraft = false;
+    let finished = false;
 
-    const assistantId = uid();
-    let streamedText = "";
-    let started = false;
-    const patchAssistant = (patch) =>
-      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, ...patch } : m)));
+    const handleEvent = (event) => {
+      switch (event.type) {
+        case "stage":
+          patch((m) => ({ trace: enterStage(m.trace, event.stage), stage: event.stage }));
+          break;
+        case "route": {
+          const info = routeInfo(event.route);
+          patch((m) => ({
+            trace: m.trace.map((s) => (s.key === "stage-routing" ? { ...s, detail: info.label, tone: info.tone } : s)),
+          }));
+          break;
+        }
+        case "tool": {
+          const key = `tool-${event.server}-${event.tool}`;
+          if (event.status === "running") {
+            patch((m) => ({
+              trace: [
+                ...m.trace.filter((s) => s.key !== key),
+                { key, label: `Gọi ${event.server} · ${event.tool}`, status: "active", sub: true },
+              ],
+            }));
+          } else {
+            patch((m) => ({
+              trace: m.trace.map((s) => (s.key === key ? { ...s, status: event.status === "error" ? "error" : "done" } : s)),
+            }));
+          }
+          break;
+        }
+        case "reset": // answer is being revised: the old draft stays until new text arrives
+          replaceDraft = true;
+          break;
+        case "token":
+          if (event.draft) {
+            draft = replaceDraft ? event.text : draft + event.text;
+            replaceDraft = false;
+            patch(() => ({ draft, status: "streaming" }));
+            break;
+          }
+          streamed += event.text;
+          patch(() => ({ content: streamed, status: "streaming" }));
+          break;
+        case "final": {
+          finished = true;
+          const r = event.response;
+          if (r.conversation_id) {
+            persistConversationId(r.conversation_id);
+            refreshConversations();
+          }
+          if (draft && atBottomRef.current) {
+            atBottomRef.current = false;
+            showAnswerTopRef.current = true;
+          }
+          patch((m) => ({
+            status: "done",
+            draft: "",
+            revealed: Boolean(draft),
+            content: r.final_answer || streamed || "Agent không trả về nội dung.",
+            trace: finishActive(m.trace),
+            meta: {
+              route: r.route,
+              confidence: r.confidence,
+              sources: r.sources || [],
+              keyThemes: r.key_themes || [],
+              processingTime: r.metadata?.processing_time || (performance.now() - startedAt) / 1000,
+              toolCalls: r.agent_responses?.tools?.tool_calls || [],
+              evaluation: r.evaluation || null,
+            },
+          }));
+          break;
+        }
+        case "error":
+          throw new Error(event.message || "Đã xảy ra lỗi khi xử lý câu hỏi.");
+        default:
+      }
+    };
 
     try {
-      setStage("routing");
-      const response = await fetch(`${API_BASE_URL}/api/query/stream`, {
+      const response = await apiFetch("/api/query/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
           query,
           conversation_id: conversationId,
+          attachment_ids: files.map((f) => f.serverId),
           include_metadata: includeMetadata,
           debug,
         }),
       });
-
       if (!response.ok || !response.body) {
         const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.detail || payload.message || "Không thể kết nối đến hệ thống Multi-RAG.");
+        throw new Error(
+          typeof payload.detail === "string" ? payload.detail : payload.message || `API trả về lỗi ${response.status}.`
+        );
       }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let finished = false;
-
-      const handleEvent = (event) => {
-        if (event.type === "stage") {
-          setStage(event.stage);
-        } else if (event.type === "tool") {
-          if (event.status === "running") setStage(`tool:${event.server} · ${event.tool}`);
-        } else if (event.type === "reset") {
-          // The answer is being revised after self-evaluation: drop the streamed draft
-          streamedText = "";
-          if (started) patchAssistant({ content: "" });
-        } else if (event.type === "token") {
-          streamedText += event.text;
-          if (!started) {
-            started = true;
-            setStreamingId(assistantId);
-            setMessages((prev) => [
-              ...prev,
-              { id: assistantId, role: "assistant", content: streamedText, streaming: true },
-            ]);
-          } else {
-            patchAssistant({ content: streamedText });
-          }
-        } else if (event.type === "final") {
-          finished = true;
-          const payload = event.response;
-          if (payload.conversation_id) {
-            persistConversationId(payload.conversation_id);
-            refreshConversations();
-          }
-          const meta = {
-            route: payload.route,
-            confidence: payload.confidence,
-            success: payload.success,
-            sources: payload.sources || [],
-            keyThemes: payload.key_themes || [],
-            processingTime: payload.metadata?.processing_time,
-            toolCalls: payload.agent_responses?.tools?.tool_calls || [],
-            evaluation: payload.evaluation || null,
-          };
-          const content = payload.final_answer || streamedText || "Agent không trả về nội dung.";
-          if (started) {
-            patchAssistant({ content, meta, streaming: false });
-          } else {
-            setMessages((prev) => [...prev, { id: assistantId, role: "assistant", content, meta }]);
-          }
-        } else if (event.type === "error") {
-          throw new Error(event.message || "Đã xảy ra lỗi khi xử lý câu hỏi.");
-        }
-      };
-
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -374,509 +358,152 @@ export default function App() {
       }
       if (!finished) throw new Error("Kết nối bị ngắt trước khi nhận đủ câu trả lời.");
     } catch (err) {
-      const msg =
-        err?.name === "AbortError"
-          ? "Yêu cầu bị hủy hoặc quá thời gian chờ."
-          : err instanceof Error
-            ? err.message
-            : "Đã xảy ra lỗi không xác định.";
-      setError(msg);
-      setMessages((prev) => [
-        ...prev.filter((m) => m.id !== assistantId),
-        {
-          id: uid(),
-          role: "assistant",
-          content: `⚠️ **Lỗi kết nối:** ${msg}\n\n*Vui lòng kiểm tra lại trạng thái API backend hoặc kết nối mạng.*`,
-          meta: { route: "error", success: false },
-        },
-      ]);
+      if (stoppedRef.current) {
+        patch((m) => ({ status: "stopped", trace: finishActive(m.trace, "done") }));
+      } else {
+        const text =
+          err?.name === "AbortError"
+            ? "Yêu cầu vượt quá thời gian chờ."
+            : err instanceof TypeError
+              ? `Không kết nối được tới API (${API_BASE_URL}). Kiểm tra backend đã chạy chưa.`
+              : err?.message || "Đã xảy ra lỗi không xác định.";
+        patch((m) => ({ status: "error", errorText: text, trace: finishActive(m.trace, "error") }));
+      }
     } finally {
       clearTimeout(timeout);
       abortRef.current = null;
+      stoppedRef.current = false;
       setIsSending(false);
-      setStreamingId(null);
-      requestAnimationFrame(() => inputRef.current?.focus());
+      if (!isMobile) focusInput();
     }
   }
 
-  function handleFormSubmit(e) {
-    e?.preventDefault();
-    submitQuery();
+  function retry(assistantId) {
+    const failed = messages.find((m) => m.id === assistantId);
+    if (!failed?.query || isSending) return;
+    // drop the failed exchange (its user turn + the error) and send the same question again
+    setMessages((prev) => {
+      const i = prev.findIndex((m) => m.id === assistantId);
+      return prev.filter((_, idx) => idx !== i && idx !== i - 1);
+    });
+    submitQuery(failed.query, failed.files || []);
   }
 
-  function handleNewChat() {
-    abortRef.current?.abort();
-    persistConversationId(null);
-    setMessages(INITIAL_MESSAGES);
-    setError("");
-    setInput("");
-    requestAnimationFrame(() => inputRef.current?.focus());
-  }
+  /* ---------- keyboard shortcuts (same as ChatGPT) */
 
-  const isInitialState = messages.length <= 1;
+  useEffect(() => {
+    function onKey(e) {
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.shiftKey && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        startNewChat();
+      } else if (mod && e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        setSidebarOpen((v) => !v);
+      } else if (e.key === "Escape" && isMobile && sidebarOpen) {
+        setSidebarOpen(false);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  /* ---------- render */
+
+  const isEmpty = messages.length === 0;
+  const offline = health.status === "offline";
+  const composer = (
+    <Composer
+      value={input}
+      onChange={setInput}
+      onSubmit={submitQuery}
+      onStop={stopGeneration}
+      isSending={isSending}
+      inputRef={inputRef}
+      offline={offline}
+      attachments={attachments}
+    />
+  );
 
   return (
-    <main className="appShell">
-      {/* SIDEBAR */}
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brandMark">
-            <BrainCircuit size={22} />
-          </div>
-          <div className="brandInfo">
-            <h1>Multi-RAG</h1>
-            <span className="brandBadge">Autonomous Agent</span>
-          </div>
-        </div>
+    <div className={`app ${sidebarOpen ? "sidebarOpen" : ""}`}>
+      <Sidebar
+        open={sidebarOpen}
+        conversations={conversations}
+        activeId={conversationId}
+        onSelect={openConversation}
+        onDelete={deleteConversation}
+        onNewChat={startNewChat}
+        onClose={() => setSidebarOpen(false)}
+        health={health}
+        user={user}
+        settings={{ theme, setTheme, includeMetadata, setIncludeMetadata, debug, setDebug }}
+      />
+      {isMobile && sidebarOpen && <div className="scrim" onClick={() => setSidebarOpen(false)} />}
 
-        <button type="button" className="newChatBtn" onClick={handleNewChat}>
-          <Plus size={18} />
-          <span>Đoạn chat mới</span>
-        </button>
-
-        {/* CONVERSATION HISTORY */}
-        {conversations.length > 0 && (
-          <section className="historyCard" aria-label="Lịch sử hội thoại">
-            <div className="sectionLabel">
-              <MessageSquare size={14} />
-              <span>Lịch sử</span>
+      <main className="main">
+        <header className="topbar">
+          {(!sidebarOpen || isMobile) && (
+            <div className="topbarGroup">
+              <button
+                type="button"
+                className="iconAction"
+                onClick={() => setSidebarOpen(true)}
+                aria-label="Mở thanh bên"
+                data-tooltip="Mở thanh bên"
+                data-tooltip-pos="bottom"
+              >
+                <PanelLeft size={18} />
+              </button>
+              <button
+                type="button"
+                className="iconAction"
+                onClick={startNewChat}
+                aria-label="Đoạn chat mới"
+                data-tooltip="Đoạn chat mới"
+                data-tooltip-pos="bottom"
+              >
+                <SquarePen size={18} />
+              </button>
             </div>
-            <ul className="historyList">
-              {conversations.map((c) => (
-                <li key={c.id}>
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    className={`historyItem ${c.id === conversationId ? "active" : ""}`}
-                    onClick={() => openConversation(c.id)}
-                    onKeyDown={(e) => e.key === "Enter" && openConversation(c.id)}
-                    title={c.title}
-                  >
-                    <span className="historyTitle">{c.title || "Cuộc trò chuyện"}</span>
-                    <button
-                      type="button"
-                      className="historyDelete"
-                      onClick={(e) => deleteConversation(c.id, e)}
-                      title="Xóa cuộc trò chuyện"
-                      aria-label="Xóa cuộc trò chuyện"
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-
-        {/* DOMAINS INFO */}
-        <section className="domainsCard" aria-label="Available Agents">
-          <div className="sectionLabel">
-            <Layers size={14} />
-            <span>Chuyên mục Agent</span>
-          </div>
-          <div className="domainItems">
-            <div className="domainItem tech">
-              <Code2 size={16} />
-              <div>
-                <strong>Tech Agent</strong>
-                <small>Tài liệu, API & Kiến trúc</small>
-              </div>
-            </div>
-            <div className="domainItem sport">
-              <Trophy size={16} />
-              <div>
-                <strong>Sport Agent</strong>
-                <small>Luật, giải đấu & lịch sử thể thao</small>
-              </div>
-            </div>
-            <div className="domainItem web">
-              <Globe size={16} />
-              <div>
-                <strong>Web Agent</strong>
-                <small>Tìm kiếm trực tuyến Real-time</small>
-              </div>
-            </div>
-            <div className="domainItem router">
-              <Zap size={16} />
-              <div>
-                <strong>Router Agent</strong>
-                <small>Phân tích ý định & Điều phối</small>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* SESSION MONITOR */}
-        <section className="statusCard" aria-label="Session status">
-          <div className="sectionLabel">
-            <Sparkles size={14} />
-            <span>Trạng thái phiên</span>
-          </div>
-          <div className="statusList">
-            <div className="statusRow">
-              <span className="statusKey">Trạng thái</span>
-              <span className={apiStatus === "online" ? "statusOnline" : "statusValue"}>
-                <span className="pulseDot" /> {STATUS_LABELS[apiStatus]}
-              </span>
-            </div>
-            <div className="statusRow">
-              <span className="statusKey">Route gần nhất</span>
-              <span className={`routeTag ${latestMeta?.route || "none"}`}>
-                {latestMeta?.route || "Chưa có"}
-              </span>
-            </div>
-            <div className="statusRow">
-              <span className="statusKey">Độ tin cậy</span>
-              <span className="statusValue">{formatPercent(latestMeta?.confidence)}</span>
-            </div>
-            {typeof latestMeta?.processingTime === "number" && (
-              <div className="statusRow">
-                <span className="statusKey">Thời gian xử lý</span>
-                <span className="statusValue">{latestMeta.processingTime.toFixed(2)}s</span>
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* CONTROLS */}
-        <section className="controlsCard" aria-label="Settings">
-          <div className="sectionLabel">
-            <Database size={14} />
-            <span>Tùy chọn cấu hình</span>
-          </div>
-          <div className="controlToggles">
-            <label className="toggleLabel">
-              <input
-                type="checkbox"
-                checked={includeMetadata}
-                onChange={(e) => setIncludeMetadata(e.target.checked)}
-              />
-              <span>Trích xuất Metadata</span>
-            </label>
-            <label className="toggleLabel">
-              <input
-                type="checkbox"
-                checked={debug}
-                onChange={(e) => setDebug(e.target.checked)}
-              />
-              <span>Chế độ Debug</span>
-            </label>
-          </div>
-
-          <div className="sidebarFooter">
-            <button
-              type="button"
-              className="iconBtn themeBtn"
-              onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-              title={theme === "dark" ? "Chuyển sang Giao diện Sáng" : "Chuyển sang Giao diện Tối"}
-            >
-              {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
-              <span>{theme === "dark" ? "Giao diện sáng" : "Giao diện tối"}</span>
-            </button>
-          </div>
-        </section>
-      </aside>
-
-      {/* CHAT MAIN PANEL */}
-      <section className="chatPanel" aria-label="Chat container">
-        {/* CHAT TOPBAR */}
-        <header className="chatTopBar">
-          <div className="chatTitleGroup">
-            <h2>Multi-RAG Assistant</h2>
-            <div className="modelBadge">
-              <Cpu size={14} />
-              <span>NVIDIA NIM LLM • Hybrid Vector Store</span>
-            </div>
-          </div>
-          <div className="topBarActions">
-            <span className="activeStatus">
-              <span className="statusPill">API: {STATUS_LABELS[apiStatus]}</span>
+          )}
+          <span className="topbarTitle">Multi-RAG Agent</span>
+          {health.status !== "online" && health.status !== "checking" && (
+            <span className={`statusBanner is-${health.status}`} role="status">
+              <WifiOff size={14} />
+              {HEALTH_LABELS[health.status]}
             </span>
-          </div>
+          )}
         </header>
 
-        {error && (
-          <div className="errorBanner" role="alert">
-            <AlertCircle size={18} />
-            <span>{error}</span>
+        {isEmpty ? (
+          <div className="home">
+            <Greeting />
+            {composer}
+            <Suggestions onPick={(prompt) => submitQuery(prompt)} />
           </div>
-        )}
-
-        {/* MESSAGES LIST */}
-        <div className="messages" aria-live="polite">
-          {messages.map((message) => (
-            <article className={`message ${message.role}`} key={message.id}>
-              <div className="avatar" aria-hidden="true">
-                {message.role === "user" ? <User size={18} /> : <Bot size={18} />}
-              </div>
-
-              <div className="bubble">
-                <div className="bubbleHeader">
-                  <span className="authorName">
-                    {message.role === "user" ? "Bạn" : "Multi-RAG Agent"}
-                  </span>
-                  {message.role === "assistant" && (
-                    <button
-                      type="button"
-                      className="copyBtn"
-                      onClick={() => handleCopy(message.id, message.content)}
-                      title="Sao chép câu trả lời"
-                    >
-                      {copiedId === message.id ? (
-                        <>
-                          <Check size={14} className="copiedIcon" />
-                          <span>Đã chép</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy size={14} />
-                          <span>Sao chép</span>
-                        </>
-                      )}
-                    </button>
-                  )}
-                </div>
-
-                <div className={`messageText ${message.role === "assistant" ? "markdown" : "userText"}`}>
-                  {message.role === "assistant" ? (
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      components={{
-                        table: ({ node, ...props }) => (
-                          <div className="tableWrapper">
-                            <table {...props} />
-                          </div>
-                        ),
-                      }}
-                    >
-                      {message.content}
-                    </ReactMarkdown>
-                  ) : (
-                    message.content
-                  )}
-                </div>
-
-                {message.meta && <MessageMeta meta={message.meta} />}
-              </div>
-            </article>
-          ))}
-
-          {/* THINKING STATE */}
-          {isSending && (!streamingId || stage === "evaluating" || stage === "refining") && (
-            <article className="message assistant thinkingMessage">
-              <div className="avatar" aria-hidden="true">
-                <Bot size={18} />
-              </div>
-              <div className="bubble thinkingBubble">
-                <div className="thinkingHeader">
-                  <Loader2 size={16} className="spinIcon" />
-                  <span>
-                    {stage.startsWith("tool:")
-                      ? `Đang dùng công cụ ${stage.slice(5)}...`
-                      : STAGE_LABELS[stage] || "Multi-RAG Agent đang xử lý..."}
-                  </span>
-                </div>
-                <div className="thinkingBar">
-                  <div className="thinkingShimmer" />
-                </div>
-              </div>
-            </article>
-          )}
-
-          {/* SUGGESTION PROMPTS (EMPTY STATE) */}
-          {isInitialState && (
-            <div className="starterPrompts">
-              <div className="starterHeader">
-                <Sparkles size={16} />
-                <span>Gợi ý câu hỏi bắt đầu nhanh:</span>
-              </div>
-              <div className="starterGrid">
-                {SAMPLE_QUESTIONS.map((item, idx) => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      type="button"
-                      key={idx}
-                      className="starterCard"
-                      onClick={() => submitQuery(item.prompt)}
-                    >
-                      <div className="starterTop">
-                        <Icon size={18} className="starterIcon" />
-                        <span className="starterDomain">{item.domain}</span>
-                      </div>
-                      <strong>{item.label}</strong>
-                      <p>{item.prompt}</p>
-                    </button>
-                  );
-                })}
+        ) : (
+          <>
+            <div className="thread" ref={scrollRef} onScroll={handleScroll} aria-live="polite">
+              <div className="threadInner">
+                {messages.map((m) => (
+                  <Message key={m.id} message={m} onRetry={isSending ? undefined : retry} />
+                ))}
               </div>
             </div>
-          )}
 
-          <div ref={messagesEndRef} />
-        </div>
-
-        {/* COMPOSER / INPUT BAR */}
-        <div className="composerWrapper">
-          <form className="composer" onSubmit={handleFormSubmit}>
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleFormSubmit();
-                }
-              }}
-              placeholder="Nhập câu hỏi để tra cứu tài liệu hoặc trò chuyện với Multi-RAG Agent..."
-              rows={1}
-            />
-            <button
-              type="submit"
-              disabled={!canSend}
-              className={`sendBtn ${canSend ? "active" : ""}`}
-              aria-label="Gửi tin nhắn"
-            >
-              {isSending ? (
-                <Loader2 size={18} className="spinIcon" />
-              ) : (
-                <Send size={18} />
+            <div className="dock">
+              {!atBottom && (
+                <button type="button" className="jumpBtn" onClick={() => scrollToBottom("smooth")} aria-label="Cuộn xuống cuối">
+                  <ArrowDown size={16} />
+                </button>
               )}
-            </button>
-          </form>
-          <div className="composerFooter">
-            <span>Nhấn <strong>Enter</strong> để gửi, <strong>Shift + Enter</strong> để xuống dòng • Hỗ trợ hiển thị Markdown Preview & Bảng</span>
-          </div>
-        </div>
-      </section>
-    </main>
-  );
-}
-
-function MessageMeta({ meta }) {
-  const hasSources = Array.isArray(meta.sources) && meta.sources.length > 0;
-  const hasThemes = Array.isArray(meta.keyThemes) && meta.keyThemes.length > 0;
-  const hasTools = Array.isArray(meta.toolCalls) && meta.toolCalls.length > 0;
-
-  if (!meta.route && !hasSources && !hasThemes && !hasTools && typeof meta.confidence !== "number") {
-    return null;
-  }
-
-  return (
-    <div className="meta">
-      <div className="metaRow">
-        {meta.route && (
-          <span className={`metaPill route-${meta.route}`}>
-            <Zap size={11} /> {meta.route}
-          </span>
+              {composer}
+              <p className="disclaimer">Agent có thể mắc lỗi. Hãy kiểm tra lại thông tin qua các nguồn được trích dẫn.</p>
+            </div>
+          </>
         )}
-        {typeof meta.confidence === "number" && (
-          <span className="metaPill">Độ khớp: {formatPercent(meta.confidence)}</span>
-        )}
-        {typeof meta.processingTime === "number" && (
-          <span className="metaPill withIcon">
-            <Clock3 size={11} />
-            {meta.processingTime.toFixed(2)}s
-          </span>
-        )}
-        {meta.evaluation?.scores && (
-          <span
-            className={`metaPill withIcon ${meta.evaluation.passed ? "evalPass" : "evalWarn"}`}
-            title={Object.entries(meta.evaluation.scores)
-              .filter(([, v]) => v != null)
-              .map(([k, v]) => `${k}: ${v}/5`)
-              .join(" · ")}
-          >
-            <ShieldCheck size={11} />
-            Chất lượng {meta.evaluation.overall}/5
-            {meta.evaluation.refine_rounds > 0 && ` · đã tự sửa ${meta.evaluation.refine_rounds} lần`}
-          </span>
-        )}
-      </div>
-
-      {hasTools && (
-        <details className="toolCalls">
-          <summary>
-            <Wrench size={14} />
-            <span>Công cụ MCP đã dùng ({meta.toolCalls.length})</span>
-            <ChevronDown size={14} className="chevron" />
-          </summary>
-          <ul className="toolList">
-            {meta.toolCalls.map((t, i) => (
-              <li key={i} className={t.ok ? "" : "toolFailed"}>
-                <code>
-                  {t.server} · {t.tool}
-                </code>
-                <span className="toolArgs">{JSON.stringify(t.arguments)}</span>
-                <span className="toolStatus">{t.ok ? "thành công" : "lỗi"}</span>
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
-
-      {hasThemes && (
-        <div className="chips">
-          {meta.keyThemes.slice(0, 6).map((theme, i) => (
-            <span key={i} className="chip">
-              #{theme}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {hasSources && (
-        <details className="sourcesAccordion">
-          <summary>
-            <FileText size={14} />
-            <span>Nguồn tài liệu tham chiếu ({meta.sources.length})</span>
-            <ChevronDown size={14} className="chevron" />
-          </summary>
-          <ul className="sourcesList">
-            {meta.sources.slice(0, 8).map((source, index) => {
-              const isWeb = source.agent === "web" || (source.source && source.source.startsWith("http")) || Boolean(source.url);
-              const linkUrl = source.url || (source.source && source.source.startsWith("http") ? source.source : null);
-              return (
-                <li key={`${source.source || "source"}-${index}`}>
-                  <div className="sourceHeader">
-                    <span className={`sourceAgent ${source.agent === "web" ? "agent-web" : ""}`}>
-                      {source.agent === "web" ? <Globe size={11} style={{ marginRight: 3, verticalAlign: 'middle' }} /> : null}
-                      {source.agent || "Agent"}
-                    </span>
-                    {isWeb && linkUrl ? (
-                      <a
-                        href={linkUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="sourceLink"
-                        title={source.snippet || source.title || linkUrl}
-                      >
-                        <span>{source.title || linkUrl}</span>
-                        <ExternalLink size={12} className="extIcon" />
-                      </a>
-                    ) : (
-                      <span className="sourceName">{source.source || "Tài liệu hệ thống"}</span>
-                    )}
-                    {source.page !== null && source.page !== undefined && (
-                      <span className="sourcePage">Trang {source.page}</span>
-                    )}
-                  </div>
-                  {source.snippet && isWeb && (
-                    <p className="sourceSnippet">{source.snippet.slice(0, 160)}...</p>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </details>
-      )}
+      </main>
     </div>
   );
-}
-
-function formatPercent(value) {
-  if (typeof value !== "number" || Number.isNaN(value)) return "n/a";
-  return `${Math.round(value * 100)}%`;
 }

@@ -2,14 +2,15 @@
 #
 #   web (nginx :8080) --/api--> api (FastAPI, N uvicorn workers)
 #                                 |  \
-#                     postgres+pgvector  minio (S3: documents, models)
+#                     postgres+pgvector  ./data/raw (documents, bind mount)
 #                                 |  /
-#                               worker (ingestion jobs)
+#                               worker (ingestion jobs + folder watcher)
 #   monitoring profile: prometheus (:9090) + grafana (:3000)
+#   s3 profile:         minio, with DOCUMENT_STORAGE=s3 (documents in a bucket instead of ./data/raw)
 #
-# Quick start (see README "Deployment"):
+# Quick start (see README section 11):
 #   python scripts/export_onnx.py          # once, creates data/models/onnx (int8 models)
-#   cp .env.example .env                    # set NVIDIA_API_KEY, passwords, ADMIN_TOKEN
+#   cp .env.example .env                    # set NVIDIA_API_KEY, POSTGRES_PASSWORD, JWT_SECRET, ADMIN_TOKEN
 #   docker compose up -d --build            # http://localhost:8080
 #   docker compose --profile monitoring up -d
 #
@@ -27,21 +28,24 @@ x-backend: &backend
     DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rag}
     VECTOR_BACKEND: pgvector
     MODEL_BACKEND: onnx
-    DOCUMENT_STORAGE: s3
-    S3_ENDPOINT_URL: http://minio:9000
+    # local: files in ./data/raw/<domain> (mounted below); edits on the host are picked up
+    #        by the worker's watcher (polling, since inotify does not cross Docker Desktop mounts)
+    # s3:    a bucket shared by every replica (run with --profile s3, or point S3_* at AWS S3 / R2)
+    DOCUMENT_STORAGE: ${DOCUMENT_STORAGE:-local}
+    WATCH_DOCUMENTS: "true"
+    WATCHFILES_FORCE_POLLING: "true"
+    S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:9000}
     S3_BUCKET: ${S3_BUCKET:-rag-documents}
     S3_ACCESS_KEY: ${MINIO_ROOT_USER:-rag}
-    S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+    S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-}
     INGEST_WORKER: external
-    WATCH_DOCUMENTS: "false"
     LOG_JSON: "true"
     MCP_ENABLED: "false"
   volumes:
     - ./data/models/onnx:/app/data/models/onnx:ro
+    - ./data/raw:/app/data/raw
   depends_on:
     postgres:
-      condition: service_healthy
-    minio:
       condition: service_healthy
     migrate:
       condition: service_completed_successfully
@@ -66,13 +70,16 @@ services:
         limits: {memory: 1g}
 
   minio:
-    # last community image published on Docker Hub; any S3 (AWS S3, R2, GCS) works instead
+    # Optional (--profile s3, with DOCUMENT_STORAGE=s3 and MINIO_ROOT_PASSWORD in .env).
+    # MinIO no longer publishes community images on Docker Hub: set MINIO_IMAGE to a build
+    # you can pull, or skip this service and point S3_ENDPOINT_URL at AWS S3 / R2 / GCS.
+    profiles: ["s3"]
     image: ${MINIO_IMAGE:-minio/minio:RELEASE.2025-04-22T22-12-26Z}
     restart: unless-stopped
     command: server /data --console-address :9001
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-rag}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-}
     volumes:
       - miniodata:/data
     healthcheck:

@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from api.deps import current_user, rate_limit
+from src.attachments import attachment_store
 from src.auth.users import User
 from src import runtime
 from src.graph import run_workflow, stream_workflow
@@ -68,6 +69,24 @@ def _open_conversation(conversation_id: Optional[str], user: User) -> Tuple[Opti
         return None, []
 
 
+def _new_files(request: QueryRequest, user: User) -> List[Dict[str, Any]]:
+    """The files sent with this message. Someone else's id is treated like an unknown one."""
+    ids = list(dict.fromkeys(request.attachment_ids))
+    if len(ids) > settings.attachment_max_files:
+        raise HTTPException(status_code=422, detail=f"Tối đa {settings.attachment_max_files} tệp mỗi tin nhắn.")
+    files = attachment_store.describe(ids, _owner(user))
+    if len(files) != len(ids):
+        raise HTTPException(status_code=404, detail="Tệp đính kèm không còn tồn tại, vui lòng tải lên lại.")
+    return files
+
+
+def _all_files(new: List[Dict[str, Any]], cid: Optional[str]) -> List[Dict[str, Any]]:
+    """New files + the most recent files of the (already authorised) conversation."""
+    ids = {f["id"] for f in new}
+    earlier = [f for f in attachment_store.in_conversation(cid) if f["id"] not in ids] if cid else []
+    return [{**f, "new": True} for f in new] + earlier[-settings.attachment_max_files:]
+
+
 def _new_run(conversation_id: Optional[str], user: User) -> Tuple[runtime.RunContext, Dict[str, Any]]:
     """Run context (cancel flag + token usage + owner) and extra graph config (tracing)."""
     rid = request_id_var.get()
@@ -75,7 +94,8 @@ def _new_run(conversation_id: Optional[str], user: User) -> Tuple[runtime.RunCon
     return ctx, tracing.run_config(ctx.request_id, conversation_id, user_id=_owner(user))
 
 
-def _remember(cid: Optional[str], query: str, resp: QueryResponse) -> None:
+def _remember(cid: Optional[str], query: str, resp: QueryResponse,
+              files: Optional[List[Dict[str, Any]]] = None) -> None:
     """Persist a finished turn; failed and blocked answers are not stored (they would
     pollute the context of later turns)."""
     if not cid or not resp.success or not resp.final_answer or (resp.guardrail or {}).get("blocked"):
@@ -91,7 +111,8 @@ def _remember(cid: Optional[str], query: str, resp: QueryResponse) -> None:
             "tool_calls": (resp.agent_responses.get("tools") or {}).get("tool_calls", []),
             "usage": resp.usage,
             "request_id": resp.request_id,
-        }, usage=resp.usage)
+        }, usage=resp.usage, files=files)
+        attachment_store.bind([f["id"] for f in files or []], cid)
     except Exception as e:
         logger.error(f"Failed to save conversation turn: {e}", exc_info=True)
 
@@ -135,15 +156,19 @@ def query_endpoint(request: QueryRequest, user: User = Depends(current_user)):
     """Process a query through the multi-RAG agent system"""
     try:
         logger.info(f"Processing query ({len(request.query)} chars)")
+        files = _new_files(request, user)
         cid, history = _open_conversation(request.conversation_id, user)
         ctx, config = _new_run(cid, user)
-        result = run_workflow(request.query, debug=request.debug, history=history, run_ctx=ctx, config=config)
+        result = run_workflow(request.query, debug=request.debug, history=history, run_ctx=ctx, config=config,
+                              attachments=_all_files(files, cid))
         metrics.record_query(result)
         resp = _build_response(request.query, result, request.include_metadata)
         resp.conversation_id = cid
         resp.request_id = ctx.request_id
-        _remember(cid, request.query, resp)
+        _remember(cid, request.query, resp, files)
         return resp
+    except HTTPException:
+        raise
     except Exception as e:
         raise _internal_error("query failed", e)
 
@@ -164,6 +189,7 @@ def query_stream_endpoint(request: QueryRequest, user: User = Depends(current_us
     the connection: the graph stops before its next step and a streaming LLM call is
     interrupted, so no more tokens are paid for.
     """
+    files = _new_files(request, user)
     ctx, config = _new_run(request.conversation_id, user)
     runtime.register(ctx)
     log_rid = request_id_var.get()
@@ -177,7 +203,8 @@ def query_stream_endpoint(request: QueryRequest, user: User = Depends(current_us
         try:
             cid, history = _open_conversation(request.conversation_id, user)
             yield _sse({"type": "start", "request_id": ctx.request_id, "conversation_id": cid})
-            for event in stream_workflow(request.query, history, run_ctx=ctx, config=config):
+            for event in stream_workflow(request.query, history, run_ctx=ctx, config=config,
+                                         attachments=_all_files(files, cid)):
                 kind = event.get("type")
                 if kind == "token" and ttft is None:
                     ttft = time.time() - started
@@ -186,7 +213,7 @@ def query_stream_endpoint(request: QueryRequest, user: User = Depends(current_us
                     resp = _build_response(request.query, event["state"], request.include_metadata)
                     resp.conversation_id = cid
                     resp.request_id = ctx.request_id
-                    _remember(cid, request.query, resp)
+                    _remember(cid, request.query, resp, files)
                     yield _sse({"type": "final", "response": resp.model_dump()})
                 elif kind == "cancelled":
                     metrics.record_cancelled()

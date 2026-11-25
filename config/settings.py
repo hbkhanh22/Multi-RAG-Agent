@@ -117,6 +117,19 @@ class Settings(BaseSettings):
     mcp_max_iterations: int = 5        # tool-call rounds per question
     mcp_max_output_chars: int = 8000   # cap on one tool result sent back to the model
 
+    # ============= Web search =============
+    # Tavily (https://tavily.com) when a key is set; ddgs (scraping, often blocked) otherwise
+    # and as fallback. Questions routed to the web are sent to the provider.
+    tavily_api_key: str = ""
+    tavily_base_url: str = "https://api.tavily.com"
+    tavily_search_depth: str = "basic"   # basic (1 credit) | advanced (2 credits)
+    tavily_timeout: float = 15.0
+    web_search_attempts: int = 3         # ddgs attempts before giving up
+    web_read_pages: int = 3              # result pages read when the provider gave no content (0 = off)
+    web_page_timeout: float = 5.0
+    web_page_chars: int = 3000           # relevant text kept per page
+    local_utc_offset: float = 7.0        # hours; "today" for web questions (Vietnam = +7)
+
     # ============= Conversation memory =============
     memory_db_path: Path = Path("data/memory.db")
     memory_max_turns: int = 6        # most recent user+assistant pairs sent to the model
@@ -131,7 +144,7 @@ class Settings(BaseSettings):
     judge_max_tokens: int = 600
     self_eval_min_score: int = 4       # a score below this fails the answer (3 let hallucinated numbers pass)
     self_eval_max_rounds: int = 1      # revise-and-recheck rounds (0 = judge only)
-    judge_max_context_chars: int = 9000
+    judge_max_context_chars: int = 12000   # 3 web pages of web_page_chars
 
     # Offline RAGAS metrics (python -m src.evaluation.run --ragas). Called through
     # NIM's OpenAI-compatible endpoint.
@@ -139,6 +152,20 @@ class Settings(BaseSettings):
     ragas_llm_model: str = ""          # empty => judge_llm_model or default_llm_model
     ragas_max_tokens: int = 4096       # claim lists can be long; truncated JSON = failed metric
     ragas_concurrency: int = 2         # parallel LLM calls (NIM free tier ~40 requests/min; 4 hit 429s)
+
+    # ============= Chat attachments =============
+    # Images, and PDF pages without a text layer, are read by a vision model (sent to NIM).
+    vision_llm_model: str = "nvidia/nemotron-3.5-super-vl-120b-a12b"
+    vision_fallback_model: str = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"   # "" = none
+    vision_max_tokens: int = 3000
+    vision_timeout: float = 60.0
+    attachment_max_mb: int = 20
+    attachment_max_files: int = 5            # per message
+    attachment_max_pages: int = 300          # PDF
+    attachment_max_scan_pages: int = 10      # one vision call per page
+    attachment_max_chars: int = 200_000      # text kept per file
+    attachment_context_chars: int = 24_000   # file text sent to the model per question
+    attachment_unused_hours: int = 24        # purge uploads never used in a message
 
     # ============= Documents =============
     supported_file_types: List[str] = [".pdf", ".txt", ".md", ".docx"]
@@ -200,8 +227,9 @@ class Settings(BaseSettings):
     jwt_secret: str = ""               # HS256 key; empty => random per process (dev only)
     access_token_minutes: int = 15
     refresh_token_days: int = 14
+    refresh_reuse_grace_seconds: int = 10  # a just-rotated refresh token still works (tabs, reloads); -1 = strict
     allow_registration: bool = True    # self sign-up with email + password
-    admin_emails: str = ""             # comma-separated: these accounts get the admin role
+    admin_emails: str = ""             # comma-separated: admin when signed in with Google; password sign-up refused
     min_password_length: int = 8
     cookie_secure: bool = False        # True behind HTTPS (refresh cookie only sent over TLS)
     login_attempts_per_minute: int = 5 # per IP+email, against password guessing

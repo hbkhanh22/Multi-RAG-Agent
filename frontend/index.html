@@ -1,12 +1,30 @@
 <!doctype html>
-<html lang="en">
+<html lang="vi">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Multi-RAG Agent Chat</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="Multi-RAG Agent — hỏi đáp trên tài liệu Tech, Sport và tìm kiếm web" />
+    <title>Multi-RAG Agent</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d0d0d'/%3E%3Cg transform='translate(4 4)' fill='%23fff' stroke='%23fff'%3E%3Ccircle cx='5' cy='5' r='2.25' stroke='none'/%3E%3Ccircle cx='5' cy='12' r='2.25' stroke='none'/%3E%3Ccircle cx='5' cy='19' r='2.25' stroke='none'/%3E%3Cpath d='M7 5.5 L14.5 11 M7 12 H14.5 M7 18.5 L14.5 13' stroke-width='1.6' stroke-linecap='round' fill='none'/%3E%3Ccircle cx='18' cy='12' r='3.5' stroke='none'/%3E%3C/g%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      // Apply the saved theme before first paint to avoid a light/dark flash.
+      (function () {
+        var t = "system";
+        try { t = localStorage.getItem("rag_theme") || "system"; } catch (e) {}
+        if (t === "system") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.dataset.theme = t;
+        document.documentElement.style.colorScheme = t;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

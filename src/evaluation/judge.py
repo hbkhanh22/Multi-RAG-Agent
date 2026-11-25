@@ -43,6 +43,9 @@ def parse_json_object(raw: str) -> Dict[str, Any]:
 def format_contexts(contexts: List[Dict[str, Any]], max_chars: Optional[int] = None) -> str:
     """Render contexts as the same [Source N] blocks the answering LLM saw."""
     budget = max_chars or settings.judge_max_context_chars
+    if not max_chars and any(c.get("agent") == "files" for c in contexts):
+        # the judge must see what the File Agent saw, or true statements look unsupported
+        budget = max(budget, settings.attachment_context_chars * 3 // 2)
     parts: List[str] = []
     used = 0
     for c in contexts:

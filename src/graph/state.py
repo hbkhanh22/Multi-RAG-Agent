@@ -20,6 +20,7 @@ class AgentState(TypedDict):
     query: str
     history: List[Dict[str, str]]  # earlier turns [{role, content}], oldest first
     standalone_query: str  # query rewritten to need no history (routing/retrieval use it)
+    attachments: List[Dict[str, Any]]  # files of this conversation (metadata only; "new" = sent with this message)
     expanded_queries: List[str]  # multi-query rewrites computed while routing ([] = not computed)
     guardrail: Dict[str, Any]    # input guardrail verdict ({"blocked": True, ...} => refused)
     

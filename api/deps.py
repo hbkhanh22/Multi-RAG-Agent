@@ -18,7 +18,7 @@ from fastapi import Depends, HTTPException, Request
 
 from config.settings import settings
 from src.auth.tokens import decode_access_token
-from src.auth.users import ANONYMOUS, User
+from src.auth.users import ANONYMOUS, User, get_user
 from src.observability import metrics
 
 
@@ -110,6 +110,7 @@ def require_admin(request: Request) -> User:
             raise HTTPException(status_code=401, detail="Admin token required")
         return ANONYMOUS
     user = current_user(request)
-    if not user.is_admin:
+    fresh = get_user(user.id)          # the role in the token may be stale (demoted / disabled)
+    if fresh is None or not fresh.is_active or not fresh.is_admin:
         raise HTTPException(status_code=403, detail="Admin role required")
     return user

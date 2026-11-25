@@ -54,6 +54,8 @@ if _AVAILABLE:
     GUARD_VERDICTS = Counter("rag_guardrail_total", "Input guardrail verdicts", ["result", "category"])
     INJECTIONS = Counter("rag_prompt_injection_total", "Prompt-injection text neutralised in retrieved content",
                          ["source"])
+    WEB_SEARCHES = Counter("rag_web_search_total", "Web searches by provider and outcome (ok|empty|unavailable)",
+                           ["provider", "outcome"])
 
 
 def _safe(fn):
@@ -138,6 +140,11 @@ def record_auth(method: str, result: str) -> None:
 @_safe
 def record_guard(result: str, category: str = "none") -> None:
     GUARD_VERDICTS.labels(result, category[:40]).inc()
+
+
+@_safe
+def record_web_search(provider: str, outcome: str) -> None:
+    WEB_SEARCHES.labels(provider, outcome).inc()
 
 
 @_safe

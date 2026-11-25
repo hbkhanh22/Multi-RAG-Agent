@@ -50,7 +50,7 @@ class SupervisorAgent(BaseAgent):
             if not query:
                 return {"success": False, "agent_responses": {}, "sources": []}
 
-            shared = {k: input_data[k] for k in ("history", "on_event", "expanded_queries")
+            shared = {k: input_data[k] for k in ("history", "on_event", "expanded_queries", "attachments")
                       if input_data.get(k)}
             agent_responses = self._execute_agents_parallel(query, active_agents, shared)
 

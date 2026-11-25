@@ -62,7 +62,7 @@ def decode_access_token(token: str) -> Optional[dict]:
 
 
 def _hash(token: str) -> str:
-    return hashlib.sha256(token.encode("ascii")).hexdigest()
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def issue_refresh_token(user_id: str, family: Optional[str] = None, user_agent: str = "") -> str:
@@ -81,9 +81,18 @@ def _aware(dt):
     return dt if dt is None or dt.tzinfo else dt.replace(tzinfo=timezone.utc)   # SQLite drops tz
 
 
+def _just_rotated(conn, row, now) -> bool:
+    if now - _aware(row.revoked_at) > timedelta(seconds=settings.refresh_reuse_grace_seconds):
+        return False
+    # after a logout nothing of the family is live: a logged-out token never comes back
+    return conn.execute(select(refresh_tokens.c.id).where(
+        refresh_tokens.c.family == row.family, refresh_tokens.c.revoked_at.is_(None))).first() is not None
+
+
 def rotate_refresh_token(token: str, user_agent: str = "") -> Optional[Tuple[str, str]]:
     """Exchange a valid refresh token for (user_id, new_refresh_token). None if invalid.
-    Re-use of a rotated token revokes every token of that login (family)."""
+    Re-use of a rotated token revokes every token of that login (family), except within a
+    few seconds (two tabs, or a page reloaded before it received the new cookie)."""
     if not token:
         return None
     now = utcnow()
@@ -91,7 +100,7 @@ def rotate_refresh_token(token: str, user_agent: str = "") -> Optional[Tuple[str
         row = conn.execute(select(refresh_tokens).where(refresh_tokens.c.token_hash == _hash(token))).first()
         if row is None:
             return None
-        if row.revoked_at is not None:
+        if row.revoked_at is not None and not _just_rotated(conn, row, now):
             conn.execute(update(refresh_tokens)
                          .where(refresh_tokens.c.family == row.family, refresh_tokens.c.revoked_at.is_(None))
                          .values(revoked_at=now))
@@ -99,7 +108,8 @@ def rotate_refresh_token(token: str, user_agent: str = "") -> Optional[Tuple[str
             return None
         if _aware(row.expires_at) <= now:
             return None
-        conn.execute(update(refresh_tokens).where(refresh_tokens.c.id == row.id).values(revoked_at=now))
+        if row.revoked_at is None:
+            conn.execute(update(refresh_tokens).where(refresh_tokens.c.id == row.id).values(revoked_at=now))
     return row.user_id, issue_refresh_token(row.user_id, family=row.family, user_agent=user_agent)
 
 
@@ -114,8 +124,10 @@ def revoke_refresh_token(token: str) -> None:
                          .values(revoked_at=utcnow()))
 
 
-def revoke_all(user_id: str) -> None:
-    with get_engine().begin() as conn:
-        conn.execute(update(refresh_tokens)
-                     .where(refresh_tokens.c.user_id == user_id, refresh_tokens.c.revoked_at.is_(None))
-                     .values(revoked_at=utcnow()))
+def revoke_all(user_id: str, conn=None) -> None:
+    if conn is None:
+        with get_engine().begin() as conn:
+            return revoke_all(user_id, conn)
+    conn.execute(update(refresh_tokens)
+                 .where(refresh_tokens.c.user_id == user_id, refresh_tokens.c.revoked_at.is_(None))
+                 .values(revoked_at=utcnow()))

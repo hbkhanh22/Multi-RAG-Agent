@@ -14,7 +14,7 @@ from langchain_core.documents import Document
 from .base_agent import BaseAgent
 from src.retrieval import reranker, query_expander
 from src.retrieval.vector_store import get_vector_store_manager  # resolved on use: importing agents loads no model
-from src.tools.web_search import web_search_tool
+from src.tools.web_search import result_text, web_search_tool
 from config.settings import settings
 from src.guardrails.injection import DATA_RULE, neutralise
 from src.observability import metrics
@@ -185,7 +185,7 @@ class RAGAgent(BaseAgent):
 
         return [
             Document(
-                page_content=f"{item['title']}: {item['snippet']}",
+                page_content=f"{item['title']}: {result_text(item)}",
                 metadata={
                     "source": item.get("url", ""),
                     "url": item.get("url", ""),

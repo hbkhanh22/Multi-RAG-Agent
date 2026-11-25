@@ -24,6 +24,7 @@ os.environ["AUTH_ENABLED"] = "false"          # security tests switch it on per 
 os.environ["GUARDRAILS_ENABLED"] = "false"    # no real NIM safety calls; tests mock the classifier
 os.environ["LANGFUSE_PUBLIC_KEY"] = ""
 os.environ["LANGFUSE_SECRET_KEY"] = ""
+os.environ["TAVILY_API_KEY"] = ""             # tests never spend search credits
 
 MCP_QUERY = "What is Model Context Protocol (MCP)?"
 OFF_TOPIC_QUERY = "What is the interest rate on 10-year US treasury bonds?"

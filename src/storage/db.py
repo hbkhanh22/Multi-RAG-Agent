@@ -8,6 +8,7 @@ One schema serves both deployments:
 
 Tables
   conversations / messages  chat history (user_id reserved for Phase 5 auth)
+  attachments               files attached to chat messages (extracted content)
   documents                 registry of ingested files per index (replaces the JSON manifest)
   ingest_jobs               durable job queue consumed by the ingestion worker
 
@@ -29,6 +30,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     String,
     Table,
@@ -100,6 +102,23 @@ messages = Table(
     Column("completion_tokens", Integer, nullable=True),
     Column("created_at", String(40), nullable=False, default=now_iso),
     Index("idx_messages_conv", "conversation_id", "id"),
+)
+
+attachments = Table(
+    "attachments", metadata,
+    Column("id", String(32), primary_key=True),
+    Column("user_id", String(64), nullable=True),
+    # NULL until the turn that uses the file succeeds
+    Column("conversation_id", String(32), ForeignKey("conversations.id", ondelete="CASCADE"),
+           nullable=True, index=True),
+    Column("filename", String(200), nullable=False),
+    Column("kind", String(16), nullable=False),      # image | pdf | document | text
+    Column("size", Integer, nullable=False),
+    Column("pages", Integer, nullable=True),
+    Column("chars", Integer, nullable=False),
+    Column("segments", JSON, nullable=False),        # [{page, label, text}]
+    Column("image", LargeBinary, nullable=True),     # downscaled JPEG (images only)
+    Column("created_at", DateTime(timezone=True), nullable=False, default=utcnow, index=True),
 )
 
 documents = Table(
