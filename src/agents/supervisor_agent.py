@@ -13,6 +13,7 @@ from .base_agent import BaseAgent
 from .rag_agent import RAGAgent
 from .web_agent import WebAgent
 from config.settings import settings
+from src.runtime import Cancelled
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +78,15 @@ class SupervisorAgent(BaseAgent):
             else:
                 logger.warning(f"Unknown agent skipped: {name}")
 
-        def _run(name: str) -> Dict:
+        # A picture next to an answer illustrates that answer: draw it afterwards
+        last = [n for n in names if n == "image"] if len(names) > 1 else []
+        names = [n for n in names if n not in last]
+
+        def _run(name: str, extra: Optional[Dict[str, Any]] = None) -> Dict:
             try:
-                return self.agents[name].run({"query": query, **(shared or {})})
+                return self.agents[name].run({"query": query, **(shared or {}), **(extra or {})})
+            except Cancelled:
+                raise
             except Exception as e:
                 logger.error(f"Error executing {name} agent: {e}", exc_info=True)
                 return {"success": False, "error": str(e), "answer": f"Error in {name} agent", "sources": []}
@@ -93,7 +100,11 @@ class SupervisorAgent(BaseAgent):
             futures = [pool.submit(contextvars.copy_context().run, _run, n) for n in names]
             results = [f.result() for f in futures]
 
-        return dict(zip(names, results))
+        out = dict(zip(names, results))
+        for n in last:
+            material = "\n\n".join(r["answer"] for r in out.values() if r.get("success") and r.get("answer"))
+            out[n] = _run(n, {"material": material, "history": ""})
+        return out
 
     def _extract_all_citations(self, responses: Dict[str, Dict]) -> List[Dict]:
         """Collect citations from all agent responses (copies, tagged with agent)"""

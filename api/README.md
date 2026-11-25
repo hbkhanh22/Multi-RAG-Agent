@@ -8,6 +8,7 @@ Lớp HTTP (FastAPI): nhận yêu cầu, kiểm tra quyền, gọi lõi ở [src
 | :-- | :-- |
 | [main.py](main.py) | Tạo ứng dụng; request id và metric cho mọi yêu cầu; khi khởi động: xếp job đồng bộ tài liệu, nạp mô hình ở nền, kết nối MCP; `/health/*`, `/metrics` |
 | [routes.py](routes.py) | Hỏi đáp, stream, hủy, hội thoại, trạng thái |
+| [images.py](images.py) | `GET /api/images/{id}`: ảnh đã vẽ, chỉ chủ sở hữu xem được |
 | [attachments.py](attachments.py) | Tải lên và xóa tệp đính kèm trong chat |
 | [documents.py](documents.py) | Quản lý kho tài liệu (quyền admin) |
 | [auth.py](auth.py) | Đăng ký, đăng nhập, làm mới phiên, đăng xuất. Khi `AUTH_ENABLED=false`, các endpoint này trả 404, trừ `config`, `me` và `logout` |

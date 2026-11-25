@@ -121,6 +121,20 @@ attachments = Table(
     Column("created_at", DateTime(timezone=True), nullable=False, default=utcnow, index=True),
 )
 
+generated_images = Table(
+    "generated_images", metadata,
+    Column("id", String(32), primary_key=True),
+    Column("user_id", String(64), nullable=True, index=True),
+    # NULL until the turn that made the image is saved
+    Column("conversation_id", String(32), ForeignKey("conversations.id", ondelete="CASCADE"),
+           nullable=True, index=True),
+    Column("prompt", Text, nullable=False),          # English prompt sent to the image model
+    Column("model", String(120), nullable=False),
+    Column("media_type", String(40), nullable=False),
+    Column("data", LargeBinary, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, default=utcnow, index=True),
+)
+
 documents = Table(
     "documents", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),

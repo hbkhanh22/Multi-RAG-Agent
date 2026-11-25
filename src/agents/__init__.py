@@ -10,6 +10,7 @@ from .synthesizer_agent import SynthesizerAgent
 from .web_agent import WebAgent
 from .tool_agent import ToolAgent
 from .file_agent import FileAgent
+from .image_agent import ImageAgent
 
 __all__ = [
     "BaseAgent",
@@ -20,4 +21,5 @@ __all__ = [
     "WebAgent",
     "ToolAgent",
     "FileAgent",
+    "ImageAgent",
 ]

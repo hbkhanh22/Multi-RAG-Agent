@@ -18,7 +18,8 @@ from src.observability.logging import configure_logging, request_id_var
 
 configure_logging()
 
-from api.attachments import router as attachments_router  # noqa: E402
+from api.attachments import router as attachments_router
+from api.images import router as images_router  # noqa: E402
 from api.auth import router as auth_router  # noqa: E402
 from api.documents import router as documents_router  # noqa: E402
 from api.routes import router  # noqa: E402
@@ -124,6 +125,7 @@ app.include_router(auth_router)
 app.include_router(router)
 app.include_router(documents_router)
 app.include_router(attachments_router)
+app.include_router(images_router)
 
 frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if frontend_dist.exists():

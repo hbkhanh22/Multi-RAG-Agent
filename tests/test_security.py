@@ -447,3 +447,17 @@ def test_tracing_masks_pii(monkeypatch):
 
     assert tracing._mask(data={"input": "mail x@y.com"}) == {"input": "mail [EMAIL]"}
     assert tracing.run_config("rid") == {}                        # no keys => disabled
+
+
+def test_trace_payloads_are_redacted_whatever_their_type():
+    from langchain_core.messages import HumanMessage
+    from src.guardrails.pii import redact_any
+
+    class Other:
+        def __str__(self):
+            return "lan@example.com"
+
+    out = redact_any({"messages": [HumanMessage(content="email: lan@example.com")], "o": Other(),
+                      "t": ("lan@example.com", 3, None, True)})
+    assert "lan@example.com" not in str(out) and out["t"][1:] == (3, None, True)
+    assert out["messages"][0]["content"].startswith("email: ")

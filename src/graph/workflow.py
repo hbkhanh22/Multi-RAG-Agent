@@ -19,6 +19,7 @@ from .nodes import (
     web_agent_node,
     tool_agent_node,
     file_agent_node,
+    image_agent_node,
     supervisor_node,
     synthesizer_node,
     evaluator_node,
@@ -45,6 +46,7 @@ def build_agent_graph():
     graph.add_node("web_agent", web_agent_node)
     graph.add_node("tool_agent", tool_agent_node)
     graph.add_node("file_agent", file_agent_node)
+    graph.add_node("image_agent", image_agent_node)
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("synthesizer", synthesizer_node)
     graph.add_node("evaluator", evaluator_node)
@@ -66,12 +68,14 @@ def build_agent_graph():
             "web_agent": "web_agent",
             "tool_agent": "tool_agent",
             "file_agent": "file_agent",
+            "image_agent": "image_agent",
             "direct_chat_agent": "direct_chat_agent",
             "blocked": "blocked",
         },
     )
 
-    for node in ("sport_agent", "tech_agent", "general_agent", "web_agent", "tool_agent", "file_agent", "supervisor"):
+    for node in ("sport_agent", "tech_agent", "general_agent", "web_agent", "tool_agent", "file_agent", "image_agent",
+                 "supervisor"):
         graph.add_edge(node, "synthesizer")
 
     graph.add_edge("direct_chat_agent", END)

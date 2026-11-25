@@ -689,6 +689,84 @@ ol {
   margin-top: 6px;
 }
 
+/* ------------------------------------------------------- generated image */
+
+.genImage {
+  position: relative;
+  width: min(100%, 512px);
+  max-height: 70vh;
+  margin: 12px 0;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--bg-subtle);
+}
+
+.genImageOpen {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: zoom-in;
+}
+
+.genImageOpen img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.genImageState {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  height: 100%;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.genImageTools {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: 6px;
+}
+
+.genImageTools > *,
+.lightbox button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+}
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.85);
+  cursor: zoom-out;
+}
+
+.lightbox img {
+  max-width: 100%;
+  max-height: calc(100dvh - 48px);
+  border-radius: var(--radius-sm);
+}
+
+.lightbox button {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+}
+
 /* ---------------------------------------------------------------- sign in */
 
 .authScreen {

@@ -53,6 +53,18 @@ def fast_route(query: str):
     return None
 
 
+# "Vẽ sơ đồ / biểu đồ" wants text or code the LLMs write themselves; an image model only
+# paints something that looks like a chart. The router model is unreliable on these.
+_DIAGRAM = re.compile(r"\b(?:sơ đồ|biểu đồ|lưu đồ|đồ thị|so do|bieu do|luu do|do thi|flow ?charts?|diagrams?|charts?|"
+                      r"mermaid|svg|uml|plantuml)\b", re.IGNORECASE)
+_PICTURE = re.compile(r"\b(?:ảnh|bức tranh|images?|pictures?|photos?|posters?)\b", re.IGNORECASE)
+
+
+def wants_diagram(query: str) -> bool:
+    query = unicodedata.normalize("NFC", query)
+    return bool(_DIAGRAM.search(query)) and not _PICTURE.search(query)
+
+
 class RouterAgent(BaseAgent):
     """Routes queries to appropriate specialist agents"""
     
@@ -65,7 +77,7 @@ class RouterAgent(BaseAgent):
             max_tokens=settings.router_max_tokens,
         )
         
-        self.domains = ["sport", "tech", "general", "web", "tools", "files"]
+        self.domains = ["sport", "tech", "general", "web", "tools", "files", "image"]
     
     def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -112,7 +124,20 @@ class RouterAgent(BaseAgent):
         """Offer the 'tools' route only while MCP servers are actually connected, and the
         'files' route only when the conversation has attached files."""
         domains = (["sport", "tech", "general", "web"] + (["tools"] if self._tools_available() else [])
-                   + (["files"] if files else []) + ["direct_chat"])
+                   + (["files"] if files else []) + (["image"] if settings.image_enabled else [])
+                   + ["direct_chat"])
+        image_rule = image_key = ""
+        if settings.image_enabled:
+            image_rule = (
+                "- image: The user asks to CREATE a picture: draw, paint, illustrate, generate or design an image, photo, "
+                "logo, poster, wallpaper; or to change a picture made earlier in the conversation.\n"
+                '  Examples: "Vẽ cho tôi 1 con mèo bên cạnh cái cây", "Tạo ảnh phong cảnh biển", "Draw a red car"\n'
+            )
+            image_key = (
+                "6. Choose 'image' only when a new picture must be produced. Questions ABOUT pictures, drawing, painters "
+                "or image AI models, searching for existing photos, and requests for code, charts, tables, diagrams, flowcharts "
+                "(vẽ biểu đồ, vẽ sơ đồ), Mermaid, SVG or HTML are NOT 'image', even when worded 'vẽ'/'draw'. Use 'multi' with 'image' only if the user wants both a picture and an answer needing lookup.\n"
+            )
         files_rule = files_key = ""
         if files:
             files_rule = ("- files: Questions about the content of the files the user attached to this conversation: "
@@ -128,8 +153,8 @@ class RouterAgent(BaseAgent):
                 '  Examples: "Đọc file hello.txt", "Liệt kê các file trong workspace", "Tóm tắt trang https://example.com"\n'
             )
             tools_key = "4. Use 'tools' ONLY for file access or fetching a given URL, not for general web search.\n"
-        return (prompt.replace("{tools_rule}", tools_rule + files_rule)
-                .replace("{tools_key_rule}", tools_key + files_key)
+        return (prompt.replace("{tools_rule}", tools_rule + files_rule + image_rule)
+                .replace("{tools_key_rule}", tools_key + files_key + image_key)
                 .replace("{domain_enum}", "|".join(domains))
                 .replace("{domain_list}", ", ".join(f'"{d}"' for d in domains)))
 
@@ -178,6 +203,14 @@ Respond with JSON only:"""
 
             if "files" in classification.get("agents", []) and not files:   # invented by the model
                 agents = [a for a in classification["agents"] if a != "files"] or ["general"]
+                classification["agents"] = classification["all_domains"] = agents
+                if len(agents) == 1:
+                    classification["route"] = agents[0]
+
+            diagram = wants_diagram(query)
+            if "image" in classification.get("agents", []) and (diagram or not settings.image_enabled):
+                agents = [a for a in classification["agents"] if a != "image"] or (
+                    ["tech"] if diagram else ["direct_chat"])
                 classification["agents"] = classification["all_domains"] = agents
                 if len(agents) == 1:
                     classification["route"] = agents[0]

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import Markdown from "./Markdown.jsx";
 import FileChip from "./FileChip.jsx";
+import GeneratedImage from "./GeneratedImage.jsx";
 import LogoMark from "./LogoMark.jsx";
 import { useCopy } from "../lib/useCopy.js";
 import { EVAL_CRITERIA, routeInfo } from "../lib/constants.js";
@@ -79,6 +80,10 @@ function AssistantMessage({ message, onRetry }) {
             <Markdown>{content}</Markdown>
           </div>
         )}
+
+        {meta?.images?.map((image) => (
+          <GeneratedImage key={image.id} image={image} />
+        ))}
 
         {status === "stopped" && (
           <p className="msgNote">

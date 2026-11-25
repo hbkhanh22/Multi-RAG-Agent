@@ -11,6 +11,7 @@ Mã nguồn lõi, không phụ thuộc HTTP. [api/](../api/README.md) và worker
 | [retrieval/](retrieval/README.md) | Tìm kiếm vector, BM25, mở rộng câu hỏi, rerank |
 | [ingestion/](ingestion/README.md) | Nạp tài liệu vào kho vector |
 | [attachments/](attachments/README.md) | Đọc và lưu tệp người dùng gửi |
+| [images/](images/README.md) | Gọi model tạo ảnh, lưu ảnh |
 | [tools/](tools/README.md) | Tìm kiếm web và đọc trang web |
 | [mcp_client/](mcp_client/README.md) | Kết nối MCP server |
 | [memory/](memory/README.md) | Lưu hội thoại, xử lý câu hỏi nối tiếp |

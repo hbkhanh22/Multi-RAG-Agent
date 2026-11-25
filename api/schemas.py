@@ -61,6 +61,8 @@ class QueryResponse(BaseModel):
     key_themes: List[str] = []
     sources: List[CitationModel] = []
     agent_responses: Dict[str, Any] = {}
+    # Pictures drawn for this answer: {id, width, height, alt, model}, see GET /api/images/{id}
+    images: List[Dict[str, Any]] = []
     # Self-evaluation: latest judge verdict + number of refine rounds (None = not evaluated)
     evaluation: Optional[Dict[str, Any]] = None
     # LLM token usage of this answer (prompt/completion, per model; estimated if the

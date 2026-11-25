@@ -12,6 +12,7 @@ TEST_PG_URL=postgresql+psycopg://... python -m pytest -q tests/test_infra.py   #
 | [conftest.py](conftest.py) | Fixture dùng chung: LLM giả, database tạm, web giả |
 | [fake_mcp_server.py](fake_mcp_server.py) | MCP server giả |
 | [test_api.py](test_api.py) | Endpoint, SSE, ẩn lỗi nội bộ |
+| [test_images.py](test_images.py) | Tạo ảnh: kiểm duyệt, dự phòng, quyền xem, định tuyến |
 | [test_attachments.py](test_attachments.py) | Đọc tệp, quyền sở hữu, vòng đời, File Agent |
 | [test_contextual.py](test_contextual.py) | Ngữ cảnh trang, phiên bản index, dịch câu hỏi |
 | [test_evaluation.py](test_evaluation.py) | Vòng chấm và viết lại, độ đo |

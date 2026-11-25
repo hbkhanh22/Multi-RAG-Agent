@@ -13,6 +13,7 @@
 | `users`, `refresh_tokens` | Tài khoản và phiên đăng nhập |
 | `conversations`, `messages` | Hội thoại |
 | `attachments` | Nội dung tệp đính kèm |
+| `generated_images` | Ảnh do agent vẽ, xóa cùng hội thoại |
 | `documents` | Tài liệu đã nạp và trạng thái, theo từng index |
 | `ingest_jobs` | Hàng đợi |
 | `chunks` | Đoạn và vector, chỉ có trên PostgreSQL |

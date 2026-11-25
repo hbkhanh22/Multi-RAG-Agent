@@ -4,7 +4,7 @@
 | :-- | :-- |
 | [metrics.py](metrics.py) | Metric Prometheus tại `/metrics`; gộp được nhiều worker |
 | [logging.py](logging.py) | Log kèm request id, dạng chữ hoặc JSON, che dữ liệu cá nhân |
-| [tracing.py](tracing.py) | Langfuse, **chưa cấu hình, chưa chạy thật** |
+| [tracing.py](tracing.py) | Langfuse, bật khi có key. Đã thử với máy nhận giả lập: trace đúng cây node, email được che, không gửi bytes ảnh; đã gửi một trace thật lên Langfuse Cloud, trễ khoảng 8 phút mới đọc được qua API. Lệnh gọi trực tiếp tới model vẽ ảnh, model đọc ảnh, NemoGuard và Tavily không có span riêng |
 
 | Nhóm metric | Ví dụ |
 | :-- | :-- |

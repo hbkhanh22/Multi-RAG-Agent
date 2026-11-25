@@ -19,7 +19,7 @@ import sys
 from sqlalchemy import select, update
 
 from src.auth.users import AuthError, demote, find_by_email, set_admin, set_password
-from src.storage.db import attachments, conversations, get_engine, users
+from src.storage.db import attachments, conversations, generated_images, get_engine, users
 
 
 def _ask_password() -> str:
@@ -33,7 +33,8 @@ def _ask_password() -> str:
 
 def claim(user_id: str) -> int:
     with get_engine().begin() as conn:
-        conn.execute(update(attachments).where(attachments.c.user_id.is_(None)).values(user_id=user_id))
+        for table in (attachments, generated_images):
+            conn.execute(update(table).where(table.c.user_id.is_(None)).values(user_id=user_id))
         return conn.execute(update(conversations).where(conversations.c.user_id.is_(None))
                             .values(user_id=user_id)).rowcount
 

@@ -13,6 +13,7 @@ Trợ lý hỏi đáp dùng nhiều AI agent. Hệ thống tự chọn agent ph�
 | Hỏi đáp trên tài liệu nội bộ | Ba miền tri thức: `sport`, `tech`, `general`. Câu hỏi tiếng Việt tìm được cả tài liệu tiếng Anh và ngược lại |
 | Tìm kiếm Internet | Tin tức, tỷ số, thông tin mới; có đọc nội dung trang kết quả |
 | Đọc tệp người dùng gửi | PDF (kể cả bản scan), ảnh, Word, Excel, PowerPoint, văn bản, mã nguồn |
+| Tạo hình ảnh | Vẽ ảnh theo mô tả, chỉnh tiếp bằng câu nối tiếp (vẽ lại ảnh mới). Yêu cầu không an toàn bị từ chối |
 | Dùng công cụ ngoài | Đọc tệp trong workspace và mở URL qua Model Context Protocol (MCP) |
 | Câu hỏi nhiều miền | Nhiều agent chạy song song, câu trả lời được gộp lại |
 | Tự kiểm tra | Một LLM chấm câu trả lời; chưa đạt thì viết lại trước khi trả về |
@@ -28,6 +29,7 @@ Trợ lý hỏi đáp dùng nhiều AI agent. Hệ thống tự chọn agent ph�
 | API | FastAPI, Uvicorn, Pydantic, Server-Sent Events |
 | Điều phối agent | LangGraph, LangChain Core |
 | LLM | NVIDIA NIM: `nemotron-3.5-lightning-30b` (trả lời, chấm điểm), `nemotron-3.5-bolt-e4b` (định tuyến, việc nhỏ), `nemotron-3.5-super-vl-120b` (đọc ảnh) |
+| Tạo ảnh | NVIDIA NIM: `flux.2-klein-4b`, dự phòng `flux.1-schnell` |
 | Embedding và rerank | `BAAI/bge-m3`, `BAAI/bge-reranker-v2-m3`, chạy bằng ONNX Runtime int8 |
 | Truy xuất | pgvector (HNSW) hoặc Chroma, BM25, Reciprocal Rank Fusion |
 | Cơ sở dữ liệu | PostgreSQL (production) hoặc SQLite (dev), SQLAlchemy, Alembic |
@@ -65,7 +67,7 @@ flowchart LR
     DOCS[("Tài liệu gốc<br/>data/raw")] --> WORKER["Worker nạp tài liệu"]
     WORKER --> DB
 
-    GRAPH -.-> NIM["NVIDIA NIM<br/>LLM, vision"]
+    GRAPH -.-> NIM["NVIDIA NIM<br/>LLM, vision, tạo ảnh"]
     ATT -.-> NIM
     GRAPH -.-> SEARCH["Tavily / ddgs"]
     GRAPH -.-> MCP["MCP servers"]
@@ -88,6 +90,7 @@ flowchart TD
     R -->|"sport, tech, general"| RAG["RAG Agent"]
     R -->|"tin mới"| W["Web Agent"]
     R -->|"tệp đính kèm"| F["File Agent"]
+    R -->|"vẽ ảnh"| I["Image Agent"]
     R -->|"URL, workspace"| T["Tool Agent"]
     R -->|"nhiều miền"| S["Supervisor<br/>chạy song song các agent"]
 
@@ -95,6 +98,7 @@ flowchart TD
     W --> SY
     F --> SY
     T --> SY
+    I --> SY
     S --> SY
 
     SY --> EV{"evaluator<br/>LLM chấm điểm"}
@@ -117,6 +121,7 @@ flowchart TD
 | RAG (sport, tech, general) | Tìm trong kho tài liệu của miền và trả lời có trích dẫn | [rag_agent.py](src/agents/rag_agent.py) |
 | Web | Viết lại câu tìm kiếm, tra Internet, tổng hợp | [web_agent.py](src/agents/web_agent.py) |
 | File | Trả lời từ tệp người dùng gửi | [file_agent.py](src/agents/file_agent.py) |
+| Image | Duyệt nội dung, viết prompt tiếng Anh, gọi model vẽ ảnh | [image_agent.py](src/agents/image_agent.py) |
 | Tool | Gọi công cụ MCP theo vòng lặp | [tool_agent.py](src/agents/tool_agent.py) |
 | Supervisor | Chạy song song nhiều agent | [supervisor_agent.py](src/agents/supervisor_agent.py) |
 | Synthesizer | Gộp câu trả lời, đánh lại số nguồn | [synthesizer_agent.py](src/agents/synthesizer_agent.py) |
@@ -199,7 +204,7 @@ python -m pytest -q -m "not models" # không cần mô hình, giống CI
 
 ## 8. Mức độ kiểm chứng
 
-Các mục 1–5 chỉ mô tả chức năng **đang bật và đã chạy thật** (25/11/2026, LLM thật, image Docker hiện tại). Riêng MCP được kiểm trên máy dev, vì trong Docker MCP bị tắt. Kiểm thử tự động: 217 đạt, 2 bỏ qua.
+Các mục 1–5 chỉ mô tả chức năng **đang bật và đã chạy thật** (25/11/2026, LLM thật, image Docker hiện tại). Riêng MCP được kiểm trên máy dev, vì trong Docker MCP bị tắt. Kiểm thử tự động: 236 đạt, 2 bỏ qua.
 
 ### Có mã nguồn nhưng chưa dùng được trong sản phẩm
 
@@ -207,7 +212,8 @@ Các mục 1–5 chỉ mô tả chức năng **đang bật và đã chạy thậ
 | :-- | :-- |
 | Đăng nhập, JWT, phân quyền | Dùng được khi đặt `AUTH_ENABLED=true` (mặc định tắt). Trình duyệt đạt 40/40, backend 61/61; còn vài hạn chế: [src/auth](src/auth/README.md#vấn-đề-chưa-sửa) |
 | Kiểm duyệt bằng NemoGuard | Đang bật nhưng **không hoạt động**: model quá hạn ở mọi lần gọi, kể cả khi chờ 60 giây. Chỉ lớp chặn jailbreak theo mẫu câu còn tác dụng |
-| Google Sign-In, Langfuse | Chưa cấu hình, chưa chạy với dịch vụ thật |
+| Google Sign-In | Chưa cấu hình, chưa chạy với dịch vụ thật |
+| Langfuse | Tắt khi chưa có key. Đã gửi trace thật lên Langfuse Cloud (25/11/2026), trễ khoảng 8 phút mới xem được qua API: [src/observability](src/observability/README.md) |
 | Tài liệu và mô hình trên S3, MinIO | Chỉ có test với S3 giả lập |
 | Grafana | Chưa chạy được ở đây (không tải được image) |
 | RAGAS, ngữ cảnh trang, HyDE, PyTorch | Không bật hoặc chưa kiểm lại |

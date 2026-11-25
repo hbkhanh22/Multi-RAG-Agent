@@ -1,9 +1,10 @@
-import { FileSearch, Globe, Paperclip, Wrench } from "lucide-react";
+import { FileSearch, Globe, ImagePlus, Paperclip, Wrench } from "lucide-react";
 import { SUGGESTIONS } from "../lib/constants.js";
 
 const CAPABILITIES = [
   { icon: FileSearch, label: "Tài liệu Tech & Sport" },
   { icon: Globe, label: "Tìm kiếm web" },
+  { icon: ImagePlus, label: "Tạo hình ảnh" },
   { icon: Wrench, label: "Công cụ MCP" },
   { icon: Paperclip, label: "Đọc PDF, ảnh, Word, Excel…" },
 ];

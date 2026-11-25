@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from sqlalchemy import delete, exists, insert, select, update
 
-from src.storage.db import attachments, conversations, get_engine, messages, now_iso
+from src.storage.db import attachments, conversations, generated_images, get_engine, messages, now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +126,7 @@ class ConversationStore:
                 return False
             # explicit child delete: SQLite only cascades with PRAGMA foreign_keys
             c.execute(delete(attachments).where(attachments.c.conversation_id == cid))
+            c.execute(delete(generated_images).where(generated_images.c.conversation_id == cid))
             c.execute(delete(messages).where(messages.c.conversation_id == cid))
             return c.execute(delete(conversations).where(conversations.c.id == cid)).rowcount > 0
 

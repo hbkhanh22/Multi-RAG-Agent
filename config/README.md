@@ -38,6 +38,8 @@ Bảng dưới là các biến hay dùng; danh sách đầy đủ nằm trong `s
 | Biến | Mặc định | Ý nghĩa |
 | :-- | :-- | :-- |
 | `ATTACHMENT_MAX_MB`, `ATTACHMENT_MAX_FILES` | `20`, `5` | Mỗi tệp; mỗi tin nhắn |
+| `IMAGE_ENABLED`, `IMAGE_MODEL`, `IMAGE_FALLBACK_MODEL` | `true`, FLUX.2 klein, FLUX.1 schnell | Tạo ảnh |
+| `IMAGE_LIMIT_PER_HOUR` | `20` | Số ảnh mỗi giờ mỗi người |
 | `ATTACHMENT_MAX_SCAN_PAGES` | `10` | Số trang scan được đọc mỗi tệp |
 | `ATTACHMENT_MAX_CHARS`, `ATTACHMENT_CONTEXT_CHARS` | `200000`, `24000` | Chữ giữ lại mỗi tệp; chữ gửi cho LLM mỗi câu hỏi |
 | `TAVILY_API_KEY`, `TAVILY_SEARCH_DEPTH` | trống, `basic` | Trống thì chỉ dùng `ddgs` |
@@ -64,7 +66,7 @@ Bảng dưới là các biến hay dùng; danh sách đầy đủ nằm trong `s
 | `RATE_LIMIT_PER_MINUTE`, `MAX_UPLOAD_MB` | `30`, `50` | `0` là tắt giới hạn; cỡ tài liệu tải lên kho |
 | `CORS_ORIGINS` | localhost | Danh sách origin, cách nhau bằng dấu phẩy |
 | `LOG_JSON`, `METRICS_ENABLED` | `false`, `true` | Log JSON; metric Prometheus |
-| `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | trống | Tracing, chưa chạy thật |
+| `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | trống | Bật tracing khi có cả hai. `LANGFUSE_HOST` phải đúng vùng của tài khoản |
 
 ## Bảo mật (xem [src/auth](../src/auth/README.md))
 

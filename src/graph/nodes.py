@@ -15,7 +15,7 @@ from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
 
 from src.agents.base_agent import BaseAgent
-from src.agents import RouterAgent, RAGAgent, SupervisorAgent, SynthesizerAgent, WebAgent, ToolAgent, FileAgent
+from src.agents import RouterAgent, RAGAgent, SupervisorAgent, SynthesizerAgent, WebAgent, ToolAgent, FileAgent, ImageAgent
 from src.graph.state import AgentState
 from src.utils import Timer
 from src.memory import condense_prompt, format_history, history_to_messages, needs_condense
@@ -63,8 +63,9 @@ rag_agents = {
 }
 tool_agent = ToolAgent()
 file_agent = FileAgent()
+image_agent = ImageAgent()
 supervisor_agent = SupervisorAgent(agents={**rag_agents, "web": web_agent, "tools": tool_agent,
-                                           "files": file_agent})
+                                           "files": file_agent, "image": image_agent})
 chat_agent = ChatAgent()
 judge_agent = AnswerJudge()
 refiner_agent = AnswerRefiner()
@@ -144,9 +145,9 @@ def router_node(state: AgentState) -> Dict[str, Any]:
 
     route = result.get("route", "general")
     agents = result.get("agents", ["general"])
-    if new_files:
+    if new_files and agents != ["image"]:
         # the user just sent a file: it is always read; other agents only join when asked for
-        extra = [a for a in agents if a in ("sport", "tech", "general", "web")] if route == "multi" else []
+        extra = [a for a in agents if a in ("sport", "tech", "general", "web", "image")] if route == "multi" else []
         agents = ["files", *extra]
         route = "multi" if extra else "files"
     logger.info(f"Route: {route}, Agents: {agents}")
@@ -183,7 +184,8 @@ def _token_event(text: str, draft: bool = False) -> Dict[str, Any]:
 
 
 def _run_agent(name: str, agent, state: AgentState) -> Dict[str, Any]:
-    emit({"type": "stage", "stage": "reading_files" if name == "files" else "retrieving"})
+    stage = {"files": "reading_files", "image": "preparing_image"}.get(name, "retrieving")
+    emit({"type": "stage", "stage": stage})
     # The judge may have the answer rewritten; the tool loop streams text between tool calls
     draft = name == "tools" or (settings.self_eval_enabled and settings.self_eval_max_rounds > 0)
     with Timer(f"{name} agent"):
@@ -192,7 +194,7 @@ def _run_agent(name: str, agent, state: AgentState) -> Dict[str, Any]:
             "query": _q(state),
             "history": format_history(state.get("history") or []),
             "expanded_queries": state.get("expanded_queries") or [],
-            "attachments": _agent_files(state) if name == "files" else [],
+            "attachments": _agent_files(state) if name == "files" else _new_files(state) if name == "image" else [],
             "on_token": lambda t: emit(_token_event(t, draft)),
             "on_event": emit,
         })
@@ -231,6 +233,12 @@ def file_agent_node(state: AgentState) -> Dict[str, Any]:
     """Answer from the files attached to the conversation"""
     logger.info("=== FILE AGENT NODE ===")
     return _run_agent("files", file_agent, state)
+
+
+def image_agent_node(state: AgentState) -> Dict[str, Any]:
+    """Draw a picture"""
+    logger.info("=== IMAGE AGENT NODE ===")
+    return _run_agent("image", image_agent, state)
 
 
 def supervisor_node(state: AgentState) -> Dict[str, Any]:
@@ -365,7 +373,8 @@ def direct_chat_node(state: AgentState) -> Dict[str, Any]:
         "Bạn là trợ lý AI thông minh của hệ thống Multi-RAG Agent. "
         "Hãy chào hỏi hoặc trò chuyện một cách tự nhiên, lịch sự và thân thiện với người dùng (bằng cùng ngôn ngữ của người dùng). "
         "Cho người dùng biết bạn sẵn sàng giải đáp và tra cứu thông tin từ tài liệu trong các lĩnh vực: "
-        "Thể thao (Sport), Công nghệ (Tech) và Kiến thức tổng quát (General), cũng như tìm kiếm thông tin mới trên Internet."
+        "Thể thao (Sport), Công nghệ (Tech) và Kiến thức tổng quát (General), cũng như tìm kiếm thông tin mới trên Internet"
+        + (" và vẽ hình ảnh theo mô tả." if settings.image_enabled else ".")
     )
 
     with Timer("Direct Chat"):

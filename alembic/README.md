@@ -9,6 +9,7 @@ Migration schema, dùng cho PostgreSQL và SQLite. Cấu hình: [alembic.ini](..
 | [versions/0001_initial.py](versions/0001_initial.py) | Hội thoại, tài liệu, hàng đợi, đoạn pgvector |
 | [versions/0002_auth.py](versions/0002_auth.py) | Tài khoản, refresh token |
 | [versions/0003_attachments.py](versions/0003_attachments.py) | Tệp đính kèm |
+| [versions/0004_images.py](versions/0004_images.py) | Ảnh do agent vẽ |
 
 ```bash
 alembic upgrade head                       # áp dụng

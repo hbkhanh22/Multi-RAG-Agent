@@ -64,6 +64,10 @@ class SynthesizerAgent(BaseAgent):
                     "retrieval_stats": stats,
                 }
 
+            if len(usable) > 1:             # a picture is shown as it is, there is no text to merge
+                usable.pop("image", None)
+            image = agent_responses.get("image") or {}
+            note = "" if "image" in usable or image.get("images") else image.get("answer", "")
             if len(usable) == 1:
                 name, resp = next(iter(usable.items()))
                 answer = resp["answer"]
@@ -73,6 +77,8 @@ class SynthesizerAgent(BaseAgent):
             else:
                 answers, citations, contexts = self._merge_with_global_numbering(usable)
                 answer, themes = self._synthesize_combined(query, answers)
+            if note:                        # the picture was refused or failed: say so
+                answer += f"\n\n*{note}*"
 
             return {
                 "success": True,
@@ -115,6 +121,8 @@ class SynthesizerAgent(BaseAgent):
             r.get("answer") for r in agent_responses.values()
             if isinstance(r, dict) and r.get("answer")
         ]
+        if set(agent_responses) == {"image"} and details:
+            return details[0]
         base = "Không thể tạo câu trả lời cho câu hỏi này."
         return base + ("\n\n" + "\n".join(details) if details else "")
 

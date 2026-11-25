@@ -153,6 +153,15 @@ class Settings(BaseSettings):
     ragas_max_tokens: int = 4096       # claim lists can be long; truncated JSON = failed metric
     ragas_concurrency: int = 2         # parallel LLM calls (NIM free tier ~40 requests/min; 4 hit 429s)
 
+    # ============= Image generation =============
+    # Text-to-image models on NIM; the request is first checked and rewritten by default_llm_model.
+    image_enabled: bool = True
+    image_base_url: str = "https://ai.api.nvidia.com/v1/genai"
+    image_model: str = "black-forest-labs/flux.2-klein-4b"
+    image_fallback_model: str = "black-forest-labs/flux.1-schnell"    # "" = none
+    image_timeout: float = 60.0
+    image_limit_per_hour: int = 20           # per user
+
     # ============= Chat attachments =============
     # Images, and PDF pages without a text layer, are read by a vision model (sent to NIM).
     vision_llm_model: str = "nvidia/nemotron-3.5-super-vl-120b-a12b"

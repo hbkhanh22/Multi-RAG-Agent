@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from api.deps import current_user, rate_limit
 from src.attachments import attachment_store
 from src.auth.users import User
+from src.images import image_store
 from src import runtime
 from src.graph import run_workflow, stream_workflow
 from src.graph.nodes import router_agent
@@ -98,7 +99,8 @@ def _remember(cid: Optional[str], query: str, resp: QueryResponse,
               files: Optional[List[Dict[str, Any]]] = None) -> None:
     """Persist a finished turn; failed and blocked answers are not stored (they would
     pollute the context of later turns)."""
-    if not cid or not resp.success or not resp.final_answer or (resp.guardrail or {}).get("blocked"):
+    refused = (resp.agent_responses.get("image") or {}).get("refused") and len(resp.agent_responses) == 1
+    if not cid or not resp.success or not resp.final_answer or refused or (resp.guardrail or {}).get("blocked"):
         return
     try:
         conversation_store.add_exchange(cid, query, resp.final_answer, meta={
@@ -109,10 +111,12 @@ def _remember(cid: Optional[str], query: str, resp: QueryResponse,
             "key_themes": resp.key_themes,
             "processing_time": (resp.metadata or {}).get("processing_time"),
             "tool_calls": (resp.agent_responses.get("tools") or {}).get("tool_calls", []),
+            "images": resp.images,
             "usage": resp.usage,
             "request_id": resp.request_id,
         }, usage=resp.usage, files=files)
         attachment_store.bind([f["id"] for f in files or []], cid)
+        image_store.bind([i["id"] for i in resp.images], cid)
     except Exception as e:
         logger.error(f"Failed to save conversation turn: {e}", exc_info=True)
 
@@ -133,6 +137,8 @@ def _build_response(query: str, result: Dict[str, Any], include_metadata: bool =
             name: {k: v for k, v in r.items() if k != "contexts"} if isinstance(r, dict) else r
             for name, r in (result.get("agent_responses") or {}).items()
         },
+        images=[i for r in (result.get("agent_responses") or {}).values() if isinstance(r, dict)
+                for i in r.get("images") or []],
         evaluation={
             **result["evaluation"],
             "refine_rounds": result.get("iteration", 0),
@@ -268,7 +274,10 @@ def batch_query_endpoint(request: BatchQueryRequest, user: User = Depends(curren
         )
     try:
         logger.info(f"Processing {len(request.queries)} queries")
-        results = [_build_response(q, run_workflow(q)) for q in request.queries]
+        results = []
+        for q in request.queries:
+            ctx, config = _new_run(None, user)
+            results.append(_build_response(q, run_workflow(q, run_ctx=ctx, config=config)))
         return BatchQueryResponse(
             results=results,
             total_count=len(results),

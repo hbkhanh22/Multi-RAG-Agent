@@ -59,6 +59,12 @@ def redact_any(data: Any) -> Any:
         return redact(data)
     if isinstance(data, dict):
         return {k: redact_any(v) for k, v in data.items()}
-    if isinstance(data, (list, tuple)):
-        return type(data)(redact_any(v) for v in data)
-    return data
+    if isinstance(data, tuple):
+        return tuple(redact_any(v) for v in data)
+    if isinstance(data, list):
+        return [redact_any(v) for v in data]
+    if hasattr(data, "model_dump"):          # LangChain messages, pydantic models
+        return redact_any(data.model_dump())
+    if data is None or isinstance(data, (bool, int, float)):
+        return data
+    return redact(str(data))                 # unknown object: never pass it on unmasked

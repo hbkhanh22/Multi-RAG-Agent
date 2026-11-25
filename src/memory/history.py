@@ -71,8 +71,8 @@ def condense_prompt(query: str, history: List[Dict[str, str]]) -> str:
         "Conversation so far:\n"
         f"{format_history(history)}\n\n"
         f"Latest user message: {query}\n\n"
-        "Rewrite the latest user message as ONE standalone question that contains all context "
+        "Rewrite the latest user message as ONE standalone question or request that contains all context "
         "needed to understand it without the conversation (resolve pronouns and references). "
         "Keep the user's language. If it is already standalone, return it unchanged. "
-        "Output only the question, nothing else."
+        "Output only the rewritten message, nothing else. Never answer it."
     )
